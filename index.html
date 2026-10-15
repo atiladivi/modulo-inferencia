@@ -2209,7 +2209,7 @@ const EXEMPLO = {"entrega": {"avaliacao_id": "3b9e6f2a-8c41-4d7e-a5b2-91c0d4e7f5
 /* =====================================================================
    Inferência — exploração de modelos de regressão (protótipo independente) · v0.5.0
    ===================================================================== */
-const INF_VERSAO = "1.28.0";
+const INF_VERSAO = "1.31.0";
 Object.assign(TX, {
   X3: { r: "x³", f: v => v * v * v, ok: v => true, cresc: 1 },
   INV_X3: { r: "1/x³", f: v => 1 / (v * v * v), ok: v => v !== 0, cresc: -1 },
@@ -13309,6 +13309,1568 @@ abrirAjuda = function () {
   const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
   ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.28.0:</b> em <b>Gravar ou exportar</b>, a opção <b>Relatório no formato do SisDEA (.xlsx)</b> gera as mesmas abas do relatório que o SisDEA exporta em Excel (Modelo, Resultados, Variáveis, Dados, Resíduos e Aderência com gráficos, Estimativas e NBR 14653-2). Com ln(y), traz a moda, a mediana e a média, e a aba Modelo indica o critério escolhido no topo. Também: o colchete com a transformação (“[1/x]”) sai do nome das colunas ao importar planilha, e o .sda gravado com uma variável chamada “Bairro” não colide mais com o texto padrão do SisDEA.</p>`);
 };
+
+/* =====================================================================
+   v1.29.0 — Revisão automática (pedido de 14/10/2026; decisões em claude/Revisao_automatica_decisoes.md)
+   - Nova utilidade, separada da Contraprova (as duas funcionam em paralelo). Só acrescenta código: nenhuma
+     função existente muda; lerSisdeaXls, entrarNoModelo, estadoProjeto, restaurarProjeto, desenharAbas e
+     abrirAjuda ganham um invólucro que chama a versão anterior e acrescenta.
+   - RA: porte do motor_inferencia.py v4.4 (mesmas regras, limites e textos). Diferenças, da passagem de 14/10:
+     a versão "exclusões do autor" é só referência (não disputa nem entra na faixa); variável com dois valores
+     só em x (formas equivalentes); forma usual preferida (razão entre áreas sem a área base fica depois);
+     erro do modelo do laudo nos dados que o autor excluiu.
+   - v1.29.1 (decisão de 14/10/2026, 23h47): exclusões, justificadas ou não, não são critério de escolha. A versão
+     "exclusões do autor" volta a disputar (RA.REGRAS.laudo_disputa) e "Dados excluídos" sai da dominância e do
+     desempate (RA.REGRAS.excl_criterio); a comparação mostra, só como informação, o erro de cada modelo nos dados
+     que deixou de fora.
+   - v1.30.0: auditoria dos dados com classificação (RA.auditoria) e perfil do avaliando: 5 vizinhos nas variáveis
+     do modelo do laudo, padronizadas, e alavancagem (RA.vizinhos). Só relatório; a busca e a escolha não mudam.
+   - v1.31.0: estabilidade (RA.estabilidade) do laudo e das 3 primeiras opções: VU sem cada dado e 1.000
+     reamostragens com semente fixa. Só relatório.
+   - Relatório .txt com as 7 seções fixas da passagem, para o agente do Copilot.
+   ===================================================================== */
+/* =====================================================================
+   v1.29.0 — Revisão automática: motor de cálculo (porte do motor_inferencia.py v4.4)
+   Passagem de 14/10/2026 (claude/Revisao_automatica_decisoes.md). Separado da Contraprova:
+   só acrescenta funções; usa do Módulo apenas pT, pF, qT, lnGama e shapiroWilk.
+   Os nomes, limites e textos seguem o motor v4.4 para os resultados baterem com os gabaritos.
+   ===================================================================== */
+const RA = (() => {
+  const NORMA = {
+    grau: { 3: { nmin: 6, sig: 0.10, F: 0.01 }, 2: { nmin: 4, sig: 0.20, F: 0.02 }, 1: { nmin: 3, sig: 0.30, F: 0.05 } },
+    extrap: { 2: { efeito: 0.15 }, 1: { efeito: 0.20 } },
+    precisao: [[3, 0.30], [2, 0.40], [1, 0.50]]
+  };
+  const REGRAS = {
+    impacto_sinal: 0.05, omitida_sig: 0.10, omitida_efeito: 0.05, residuo_forte: 2.5, residuo_freq: [2.0, 0.6], cook: 1.0,
+    z_atipico: 3.5, tol_erro: 0.005, premiar_grau_acima: false, normalidade_p: 0.05, homoc_p: 0.05, top_exclusao: 40,
+    rodadas_exclusao: 6, limite_ajustes: 30000, refinar_top: 60, avaliar_por_etapa: 300, opcoes: 8, checar_omitidas_max: 300,
+    sens_exclusao: 0.10,
+    dois_niveis_x: true,   // variável com dois valores: só x (formas equivalentes; false = como o motor v4.4)
+    laudo_disputa: true,   // v1.29.1 (decisão de 14/10, 23h47): a versão "exclusões do autor" disputa como as outras (false = só referência, v1.29.0)
+    excl_criterio: false   // v1.29.1: exclusões (justificadas ou não) não são critério de escolha; true = como o motor v4.4
+  };
+
+  /* ---------------- utilidades ---------------- */
+  const norm = s => String(s ?? "").normalize("NFKD").replace(/[^\x00-\x7F]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  const tokens = s => norm(s).split(/[^a-z0-9]+/).filter(Boolean);
+  /* toFixed com o arredondamento do Python (meio exato vai para o par: 52,5 → 52) */
+  function fixPy(x, nd) {
+    const f = 10 ** nd, y = x * f;
+    if (Number.isFinite(y) && Math.abs(y) < 1e15 && Math.abs(y % 1) === 0.5) { let r = Math.floor(Math.abs(y)); if (r % 2) r += 1; return (Math.sign(y) * r / f).toFixed(nd); }
+    return x.toFixed(nd);
+  }
+  function br(v, nd = 2) {
+    if (v === null || v === undefined || !Number.isFinite(+v)) return "-";
+    const s = fixPy(Math.abs(+v), nd); const [i, f] = s.split(".");
+    return (+v < 0 ? "-" : "") + i.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + (f !== undefined ? "," + f : "");
+  }
+  function pct(v, nd = 1, sinal = true) {
+    if (v === null || v === undefined || !Number.isFinite(v)) return "-";
+    const x = v * 100, s = fixPy(x, nd);
+    return ((sinal && !s.startsWith("-") ? "+" : "") + s + "%").replace(".", ",");
+  }
+  const ROMANO = { 0: "insuficiente", 1: "I", 2: "II", 3: "III" };
+  const SEP = "\u0001";
+  const chaveSpec = spec => spec.map(([v, t]) => v + SEP + t).join("\u0002");
+  const conjVars = spec => spec.map(s => s[0]).sort().join("\u0002");
+  const conjSpec = spec => spec.map(([v, t]) => v + SEP + t).sort().join("\u0002");
+  const somaArr = a => { let s = 0; for (const x of a) s += x; return s; };
+  const medianaArr = arr => { const a = [...arr].filter(x => !Number.isNaN(x)).sort((x, y) => x - y); if (!a.length) return NaN; const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+  const nunique = arr => new Set(arr.filter(x => !Number.isNaN(x))).size;
+  function* comb(arr, r) {
+    const n = arr.length; if (r > n || r < 0) return;
+    const ix = Array.from({ length: r }, (_, i) => i);
+    for (;;) {
+      yield ix.map(i => arr[i]);
+      let i = r - 1; while (i >= 0 && ix[i] === i + n - r) i--;
+      if (i < 0) return;
+      ix[i]++; for (let j = i + 1; j < r; j++) ix[j] = ix[j - 1] + 1;
+    }
+  }
+  function* produto(listas) {
+    const k = listas.length; if (listas.some(l => !l.length)) return;
+    const ix = new Array(k).fill(0);
+    for (;;) {
+      yield ix.map((i, j) => listas[j][i]);
+      let j = k - 1; while (j >= 0 && ix[j] === listas[j].length - 1) { ix[j] = 0; j--; }
+      if (j < 0) return; ix[j]++;
+    }
+  }
+  function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  class NaoAplicavel extends Error { constructor() { super("modelo não aplicável ao avaliando"); } }
+
+  /* ---------------- transformações (códigos do motor) ---------------- */
+  const TR = { x: v => v, ln: Math.log, "1/x": v => 1 / v, rx: Math.sqrt, x2: v => v * v, "1/x2": v => 1 / (v * v), "1/rx": v => 1 / Math.sqrt(v), exp: Math.exp };
+  const INV_Y = { x: v => v, ln: Math.exp, "1/x": v => 1 / v, rx: v => v * v, x2: Math.sqrt, "1/x2": v => 1 / Math.sqrt(v), "1/rx": v => 1 / (v * v) };
+  const NOME_X = { x: "x", ln: "ln(x)", "1/x": "1/x", rx: "x½", x2: "x²", "1/x2": "1/x²", "1/rx": "1/x½", exp: "exp(x)" };
+  const FMT_X = { x: "{}", ln: "ln({})", "1/x": "1/{}", rx: "{}½", x2: "{}²", "1/x2": "1/{}²", "1/rx": "1/{}½", exp: "exp({})" };
+  const NOME_Y = { x: "y", ln: "ln(y)", "1/x": "1/y", rx: "y½", x2: "y²", "1/x2": "1/y²", "1/rx": "1/y½" };
+  const TRANSF_TODAS = ["x", "ln", "1/x", "rx", "x2", "1/x2", "1/rx"];
+  const NIVEIS_BUSCA = [["x", "ln", "1/x", "rx"], ["x", "ln", "1/x"], ["x", "ln"]];
+  const YTRS = ["x", "ln", "1/x"];
+  /* códigos do Módulo → motor */
+  const DE_TX = { X: "x", LN_X: "ln", INV_X: "1/x", RAIZ_X: "rx", X2: "x2", INV_X2: "1/x2", INV_RAIZ_X: "1/rx" };
+  const DE_TY = { Y: "x", LN_Y: "ln", INV_Y: "1/x", RAIZ_Y: "rx", Y2: "x2", INV_RAIZ_Y: "1/rx", INV_Y2: "1/x2" };
+  const PARA_TX = Object.fromEntries(Object.entries(DE_TX).map(([a, b]) => [b, a]));
+  const PARA_TY = Object.fromEntries(Object.entries(DE_TY).map(([a, b]) => [b, a]));
+
+  function transfValidas(v, tipo, xav, lista = TRANSF_TODAS) {
+    if (tipo === "dic") return ["x"];
+    const a = Array.from(v); if (xav !== undefined && xav !== null) a.push(+xav);
+    if (!a.every(Number.isFinite)) return [];
+    /* passagem 14/10: com só dois valores (amostra e avaliando), todas as transformações dão o mesmo modelo; fica só x */
+    if (REGRAS.dois_niveis_x && new Set(a).size <= 2) return ["x"];
+    if (a.some(x => x <= 0)) { const ok = ["x", "x2"].concat(a.every(x => x >= 0) ? ["rx"] : []); const r = lista.filter(t => ok.includes(t)); return r.length ? r : ["x"]; }
+    return [...lista];
+  }
+
+  /* ---------------- distribuições (do Módulo) ---------------- */
+  const QT = new Map();
+  const tq90 = gl => { let v = QT.get(gl); if (v === undefined) { v = qT(0.90, gl); QT.set(gl, v); } return v; };
+  const pBi = (t, gl) => Number.isNaN(t) ? NaN : pT(Math.abs(t), gl);
+  function gammaQ(a, x) {
+    if (!(x >= 0) || !(a > 0)) return NaN; if (x === 0) return 1;
+    const lg = -x + a * Math.log(x) - lnGama(a);
+    if (x < a + 1) { let ap = a, sum = 1 / a, del = sum; for (let n = 0; n < 1000; n++) { ap++; del *= x / ap; sum += del; if (Math.abs(del) < Math.abs(sum) * 1e-15) break; } return Math.max(0, 1 - sum * Math.exp(lg)); }
+    let b = x + 1 - a, c = 1e300, d = 1 / b, h = d;
+    for (let i = 1; i < 1000; i++) { const an = -i * (i - a); b += 2; d = an * d + b; if (Math.abs(d) < 1e-300) d = 1e-300; c = b + an / c; if (Math.abs(c) < 1e-300) c = 1e-300; d = 1 / d; const del = d * c; h *= del; if (Math.abs(del - 1) < 1e-15) break; }
+    return Math.exp(lg) * h;
+  }
+  const chi2sf = (x, k) => gammaQ(k / 2, x / 2);
+
+  /* ---------------- álgebra ---------------- */
+  function cholesky(A, p) {
+    const L = Array.from({ length: p }, () => new Float64Array(p));
+    for (let j = 0; j < p; j++) {
+      let s = A[j][j]; for (let k = 0; k < j; k++) s -= L[j][k] * L[j][k];
+      if (!(s > 0)) return null;
+      const d = Math.sqrt(s); L[j][j] = d;
+      for (let i = j + 1; i < p; i++) { let t = A[i][j]; for (let k = 0; k < j; k++) t -= L[i][k] * L[j][k]; L[i][j] = t / d; }
+    }
+    return L;
+  }
+  function invTriL(L, p) {
+    const M = Array.from({ length: p }, () => new Float64Array(p));
+    for (let i = 0; i < p; i++) { M[i][i] = 1 / L[i][i]; for (let j = 0; j < i; j++) { let s = 0; for (let k = j; k < i; k++) s += L[i][k] * M[k][j]; M[i][j] = -s / L[i][i]; } }
+    return M;
+  }
+  function gramInv(Li, p) {   // (L Lᵀ)⁻¹ = Liᵀ Li
+    const G = Array.from({ length: p }, () => new Float64Array(p));
+    for (let a = 0; a < p; a++) for (let b = a; b < p; b++) { let s = 0; for (let k = b; k < p; k++) s += Li[k][a] * Li[k][b]; G[a][b] = s; G[b][a] = s; }
+    return G;
+  }
+  function inverterGJ(A) {   // inversa simples (VIF); singular → null
+    const n = A.length, M = A.map((r, i) => [...r, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
+    for (let c = 0; c < n; c++) {
+      let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      if (!(Math.abs(M[p][c]) > 0)) return null;
+      [M[c], M[p]] = [M[p], M[c]]; const d = M[c][c]; for (let j = 0; j < 2 * n; j++) M[c][j] /= d;
+      for (let r = 0; r < n; r++) if (r !== c) { const f = M[r][c]; if (f) for (let j = 0; j < 2 * n; j++) M[r][j] -= f * M[c][j]; }
+    }
+    return M.map(r => r.slice(n));
+  }
+
+  /* ---------------- dados: colunas e subconjuntos (índices de linha) ---------------- */
+  const colDe = (F, nome, idx) => { const c = F.cols[nome], o = new Float64Array(idx.length); for (let i = 0; i < idx.length; i++) o[i] = c[idx[i]]; return o; };
+  const linhaDe = (F, i) => { const o = {}; for (const k in F.cols) o[k] = F.cols[k][i]; return o; };
+  const semExcl = (F, excl) => { const s = new Set(excl); const o = []; for (let i = 0; i < F.N; i++) if (!s.has(i)) o.push(i); return o; };
+
+  /* ---------------- ajuste completo ---------------- */
+  function ajustar(F, idx, spec, y, ytr) {
+    const n = idx.length, p = spec.length + 1;
+    if (n - p < 1) return null;
+    const X = new Array(n), Y = new Float64Array(n), ty = TR[ytr], cy = F.cols[y];
+    const cs = spec.map(([v, t]) => [F.cols[v], TR[t]]);
+    for (let i = 0; i < n; i++) {
+      const r = idx[i], row = new Float64Array(p); row[0] = 1;
+      for (let j = 0; j < cs.length; j++) row[j + 1] = cs[j][1](cs[j][0][r]);
+      X[i] = row; Y[i] = ty(cy[r]);
+    }
+    for (let i = 0; i < n; i++) { if (!Number.isFinite(Y[i])) return null; for (let j = 0; j < p; j++) if (!Number.isFinite(X[i][j])) return null; }
+    const sc = new Float64Array(p);
+    for (let j = 0; j < p; j++) { let s = 0; for (let i = 0; i < n; i++) s += X[i][j] * X[i][j]; sc[j] = Math.sqrt(s); if (sc[j] === 0) return null; }
+    const G = Array.from({ length: p }, () => new Float64Array(p)), gy = new Float64Array(p);
+    for (let i = 0; i < n; i++) { const r = X[i]; for (let a = 0; a < p; a++) { const xa = r[a] / sc[a]; gy[a] += xa * Y[i]; for (let b = a; b < p; b++) G[a][b] += xa * r[b] / sc[b]; } }
+    for (let a = 0; a < p; a++) for (let b = 0; b < a; b++) G[a][b] = G[b][a];
+    const L = cholesky(G, p); if (!L) return null;
+    let mn = Infinity, mx = 0; for (let j = 0; j < p; j++) { mn = Math.min(mn, L[j][j]); mx = Math.max(mx, L[j][j]); }
+    if (mn < 1e-6 * mx) return null;   // colinearidade numérica (= |diag R| do QR)
+    const Li = invTriL(L, p), Gi = gramInv(Li, p);
+    const b = new Float64Array(p); for (let a = 0; a < p; a++) { let s = 0; for (let c = 0; c < p; c++) s += Gi[a][c] * gy[c]; b[a] = s / sc[a]; }
+    const XtXi = Array.from({ length: p }, (_, a) => Float64Array.from({ length: p }, (_, c) => Gi[a][c] / (sc[a] * sc[c])));
+    const e = new Float64Array(n); let sse = 0, my = 0;
+    for (let i = 0; i < n; i++) { let yh = 0; for (let j = 0; j < p; j++) yh += X[i][j] * b[j]; e[i] = Y[i] - yh; sse += e[i] * e[i]; my += Y[i]; }
+    my /= n; let sst = 0; for (let i = 0; i < n; i++) sst += (Y[i] - my) ** 2;
+    const s2 = sse / (n - p);
+    if (!Number.isFinite(s2) || s2 <= 0 || sst <= 0) return null;
+    const s = Math.sqrt(s2), R2 = 1 - sse / sst, R2a = 1 - (1 - R2) * (n - 1) / (n - p);
+    const Fv = p > 1 ? (R2 / (p - 1)) / ((1 - R2) / (n - p)) : 0;
+    const sigF = p > 1 ? pF(Fv, p - 1, n - p) : 1;
+    const se = new Float64Array(p), t = new Float64Array(p), sig = new Float64Array(p);
+    for (let j = 0; j < p; j++) { se[j] = Math.sqrt(Math.abs(XtXi[j][j]) * s2); t[j] = b[j] / se[j]; sig[j] = pBi(t[j], n - p); }
+    const h = new Float64Array(n), rp = new Float64Array(n), cook = new Float64Array(n), z = new Float64Array(p);
+    for (let i = 0; i < n; i++) {
+      for (let a = 0; a < p; a++) { let v = X[i][a] / sc[a]; for (let k = 0; k < a; k++) v -= L[a][k] * z[k]; z[a] = v / L[a][a]; }
+      let hh = 0; for (let a = 0; a < p; a++) hh += z[a] * z[a]; h[i] = hh;
+      rp[i] = e[i] / s; cook[i] = e[i] * e[i] / (p * s2) * hh / ((1 - hh) * (1 - hh));
+    }
+    return { spec: spec.map(x => [x[0], x[1]]), ytr, y, b, se, t, sig, n, k: p - 1, s, R2, R2a, F: Fv, sigF, XtXi, e, rp, h, cook, idx, X, Y };
+  }
+  function x0de(m, av) { const r = [1]; for (const [v, t] of m.spec) r.push(TR[t](av[v] === undefined || av[v] === null ? NaN : +av[v])); return r; }
+  function prever(m, av, crit = "mediana") {
+    const x0 = x0de(m, av), p = x0.length; let yh = 0, q = 0;
+    for (let a = 0; a < p; a++) { yh += x0[a] * m.b[a]; for (let c = 0; c < p; c++) q += x0[a] * m.XtXi[a][c] * x0[c]; }
+    const se0 = m.s * Math.sqrt(Math.max(q, 0)), tc = tq90(m.n - m.k - 1), inv = INV_Y[m.ytr];
+    const med = inv(yh), l1 = inv(yh - tc * se0), l2 = inv(yh + tc * se0), a = Math.min(l1, l2), c = Math.max(l1, l2);
+    if (!(Number.isFinite(med) && med > 0 && Number.isFinite(a) && Number.isFinite(c) && a > 0)) throw new NaoAplicavel();
+    const out = { est: med, ic_min: a, ic_max: c, amplitude: (c - a) / med, mediana: med };
+    if (m.ytr === "ln") {
+      const s2 = m.s * m.s; out.moda = med * Math.exp(-s2); out.media = med * Math.exp(s2 / 2);
+      const f = crit === "moda" ? Math.exp(-s2) : crit === "media" ? Math.exp(s2 / 2) : 1;
+      out.est = med * f; out.ic_min = a * f; out.ic_max = c * f;
+    }
+    return out;
+  }
+  function vuDe(ctx, m, av, crit) { let est = prever(m, av, crit || ctx.crit).est; if (m.y === ctx.vt) est = est / +av[ctx.base]; return est; }
+  const tenta = f => { try { return f(); } catch (e) { if (e instanceof NaoAplicavel) return NaN; throw e; } };
+
+  /* ---------------- itens da norma ---------------- */
+  function grauDe(valor, chave) { for (const g of [3, 2, 1]) if (valor <= NORMA.grau[g][chave]) return g; return 0; }
+  function grauPrecisao(amp) { for (const [g, lim] of NORMA.precisao) if (amp <= lim) return g; return 0; }
+  function extrapolacao(F, idx, m, av, crit, baseVt) {
+    const val = a => { const e = prever(m, a, crit).est; return baseVt ? e / +a[baseVt] : e; };
+    const base = val(av), fora = [], avLim = { ...av };
+    for (const [v] of m.spec) {
+      const c = colDe(F, v, idx); let lo = Infinity, hi = -Infinity; for (const x of c) { if (x < lo) lo = x; if (x > hi) hi = x; }
+      const x = +av[v]; if (lo <= x && x <= hi) continue;
+      const lim = x > hi ? hi : lo, condA = x > hi ? x <= 2 * hi : (lo > 0 && x >= lo / 2);
+      const a2 = { ...av, [v]: lim };
+      let ef; try { ef = Math.abs(base / val(a2) - 1); } catch (e) { if (!(e instanceof NaoAplicavel)) throw e; ef = Infinity; }
+      fora.push({ variavel: v, x, lo, hi, cond_a: condA, efeito: ef }); avLim[v] = lim;
+    }
+    let simult = 0;
+    if (fora.length) { try { simult = Math.abs(base / val(avLim) - 1); } catch (e) { if (!(e instanceof NaoAplicavel)) throw e; simult = Infinity; } }
+    let g;
+    if (!fora.length) g = 3;
+    else if (!fora.every(f => f.cond_a)) g = 0;
+    else if (fora.length === 1 && fora[0].efeito <= NORMA.extrap[2].efeito) g = 2;
+    else if (fora.every(f => f.efeito <= NORMA.extrap[1].efeito) && simult <= NORMA.extrap[1].efeito) g = 1;
+    else g = 0;
+    return { grau: g, fora, simultaneo: simult };
+  }
+  function itensGrau(F, idx, m, av, crit, baseVt) {
+    const k = m.k, n = m.n;
+    let i2 = 0; for (const g of [3, 2, 1]) if (n >= NORMA.grau[g].nmin * (k + 1)) { i2 = g; break; }
+    let smax = 0; for (let j = 1; j <= k; j++) smax = Math.max(smax, m.sig[j]);
+    const i5 = grauDe(k ? smax : 0, "sig"), i6 = k ? grauDe(m.sigF, "F") : 0;
+    const ext = extrapolacao(F, idx, m, av, crit, baseVt);
+    return [{ 2: i2, 4: ext.grau, 5: i5, 6: i6 }, ext];
+  }
+  const minimoMicro = n => n <= 30 ? 3 : n <= 100 ? Math.ceil(0.10 * n) : 10;
+  function micronumerosidade(F, idx, m, tipos) {
+    const mm = minimoMicro(m.n), det = []; let ok = true;
+    for (const [v] of m.spec) if (tipos[v] === "dic" || tipos[v] === "cod") {
+      const cont = new Map(); for (const x of colDe(F, v, idx)) cont.set(x, (cont.get(x) || 0) + 1);
+      const ks = [...cont.keys()].sort((a, b) => a - b), contagem = ks.map(kk => [kk, cont.get(kk)]);
+      const okv = Math.min(...contagem.map(c => c[1])) >= mm; ok = ok && okv;
+      det.push({ variavel: v, tipo: tipos[v], contagem, ok: okv });
+    }
+    return { ok, minimo: mm, detalhes: det };
+  }
+  function combinacaoDic(F, idx, m, av, tipos) {
+    const cats = m.spec.filter(([v]) => tipos[v] === "dic").map(s => s[0]);
+    if (cats.length < 2) return null;
+    let c = 0; for (const r of idx) if (cats.every(v => F.cols[v][r] === +av[v])) c++;
+    return c;
+  }
+  function corrMat(m) {
+    const k = m.k, n = m.n, cols = Array.from({ length: k }, (_, j) => Array.from({ length: n }, (_, i) => m.X[i][j + 1]));
+    const mu = cols.map(c => somaArr(c) / n), sd = cols.map((c, j) => Math.sqrt(somaArr(c.map(x => (x - mu[j]) ** 2))));
+    return cols.map((a, i) => cols.map((b, j) => { let s = 0; for (let t = 0; t < n; t++) s += (a[t] - mu[i]) * (b[t] - mu[j]); return s / (sd[i] * sd[j]); }));
+  }
+  function vif(m) {
+    if (m.k < 2) return new Array(m.k).fill(1);
+    const inv = inverterGJ(corrMat(m)); return inv ? inv.map((r, i) => r[i]) : new Array(m.k).fill(Infinity);
+  }
+
+  /* ---------------- pressupostos ---------------- */
+  function pesosMoran(xy) {
+    const n = xy.length, graus = Math.max(...xy.flat().map(Math.abs)) <= 180, W = Array.from({ length: n }, () => new Float64Array(n));
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      let D;
+      if (graus) { const r = Math.PI / 180, la1 = xy[i][0] * r, la2 = xy[j][0] * r, dlo = (xy[i][1] - xy[j][1]) * r; const a = Math.sin((la1 - la2) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dlo / 2) ** 2; D = 2 * 6371000 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, a)))); }
+      else D = Math.hypot(xy[i][0] - xy[j][0], xy[i][1] - xy[j][1]);
+      W[i][j] = D > 0 ? 1 / D : 0;
+    }
+    for (let i = 0; i < n; i++) { const s = somaArr(W[i]); if (s > 0) for (let j = 0; j < n; j++) W[i][j] /= s; }
+    return W;
+  }
+  function moran(res, W, perm = 999) {
+    const n = res.length, mu = somaArr(res) / n, z = Array.from(res, v => v - mu);
+    const I_ = zz => { let num = 0, den = 0; for (let i = 0; i < n; i++) { den += zz[i] * zz[i]; let s = 0; for (let j = 0; j < n; j++) s += W[i][j] * zz[j]; num += zz[i] * s; } return num / den; };
+    const I = I_(z), rnd = mulberry32(0); let cont = 0; const zp = [...z];
+    for (let k = 0; k < perm; k++) { for (let i = n - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [zp[i], zp[j]] = [zp[j], zp[i]]; } if (I_(zp) >= I) cont++; }
+    return { I, p: (1 + cont) / (1 + perm), esperado: -1 / (n - 1) };
+  }
+  function pressupostos(F, ctx, m) {
+    const e = m.e, rp = m.rp, n = m.n, X = m.X, k = m.k, p = k + 1;
+    const sw = shapiroWilk(Array.from(e)), sh = sw ? sw.p : NaN;
+    const e2 = Array.from(e, v => v * v), me2 = somaArr(e2) / n;
+    const bb = new Float64Array(p); for (let a = 0; a < p; a++) { let s = 0; for (let i = 0; i < n; i++) s += X[i][a] * e2[i]; bb[a] = s; }
+    const bh = Array.from({ length: p }, (_, a) => { let s = 0; for (let c = 0; c < p; c++) s += m.XtXi[a][c] * bb[c]; return s; });
+    let sres = 0, stot = 0; for (let i = 0; i < n; i++) { let f = 0; for (let a = 0; a < p; a++) f += X[i][a] * bh[a]; sres += (e2[i] - f) ** 2; stot += (e2[i] - me2) ** 2; }
+    const r2aux = stot > 0 ? 1 - sres / stot : 0, bp = k > 0 ? chi2sf(n * r2aux, k) : NaN;
+    let mo = null;
+    if (ctx.coords) { const xy = m.idx.map(r => [F.cols[ctx.coords[0]][r], F.cols[ctx.coords[1]][r]]); if (xy.flat().every(Number.isFinite)) { try { mo = moran(e, pesosMoran(xy)); } catch (er) { mo = null; } } }
+    let ic = 0; for (let i = 1; i < n; i++) if (m.cook[i] > m.cook[ic]) ic = i;
+    const vf = k ? vif(m) : [1];
+    return { shapiro_p: sh, pct: [1, 1.64, 1.96].map(zz => Array.from(rp).filter(v => Math.abs(v) <= zz).length / n), bp_p: bp, moran: mo,
+      cook_max: m.cook[ic], cook_id: m.idx[ic], vif_max: k ? Math.max(...vf) : 1, outliers: m.idx.filter((r, i) => Math.abs(rp[i]) > 2) };
+  }
+
+  /* ---------------- sinais esperados ---------------- */
+  const SINAIS_PADRAO = [
+    [["distancia", "valoriz"], -1], [["distancia", "polo"], -1], [["distancia", "centro"], -1], [["idade"], -1],
+    [["testada"], 1], [["frente"], 1], [["padrao"], 1], [["acabamento"], 1], [["qualidade"], 1],
+    [["renda"], 1], [["vaga"], 1], [["vagas"], 1], [["garagem"], 1], [["suite"], 1], [["suites"], 1],
+    [["dormit"], 1], [["quarto"], 1], [["banh"], 1], [["elevador"], 1], [["piscina"], 1],
+    [["lazer"], 1], [["pavimentacao"], 1], [["infraestrutura"], 1], [["oferta"], 1], [["carga"], 1]
+  ];
+  function ehArea(nome, tipo = "quant") {
+    if (tipo !== "quant" || String(nome).includes("÷")) return false;
+    const tk = tokens(nome), n = norm(nome);
+    if (tk.includes("valor") || tk.includes("vlr")) return false;
+    return tk.includes("area") || n.startsWith("a.") || n.startsWith("a ") || tk.some(t => ["construida", "privativa", "edificada", "util", "equivalente"].includes(t));
+  }
+  const CONFIAVEL = new Set(["lido do arquivo", "informado pelo revisor", "variável base: efeito escala"]);
+  function mapaSinais(variaveis, tipos, base, sinaisUsuario) {
+    const out = {};
+    for (const v of variaveis) {
+      const n = norm(v), tk = tokens(v);
+      if (sinaisUsuario && sinaisUsuario[v]) { out[v] = [Math.sign(sinaisUsuario[v][0]), sinaisUsuario[v][1]]; continue; }
+      if (String(v).includes("÷")) { out[v] = [0, "variável derivada"]; continue; }
+      if (ehArea(v, tipos[v] || "quant")) {
+        const nAreas = variaveis.filter(x => ehArea(x, tipos[x] || "quant")).length;
+        if (base && norm(base) === n) out[v] = [-1, "variável base: efeito escala"];
+        else if (base) out[v] = [1, "outra área (por unidade da base)"];
+        else if (nAreas === 1) out[v] = [-1, "única área: efeito escala (base não identificada)"];
+        else out[v] = [0, "área sem base definida"];
+        continue;
+      }
+      let s = 0;
+      for (const [pal, sg] of SINAIS_PADRAO) if (pal.every(p => tk.some(t => t.startsWith(p)))) { s = sg; break; }
+      out[v] = [s, s ? "tabela padrão" : "sem expectativa"];
+    }
+    return out;
+  }
+  function coerencia(F, ctx, idx, m) {
+    const av = ctx.av, tipos = ctx.tipos, out = [];
+    const vu0 = tenta(() => vuDe(ctx, m, av));
+    for (const [v] of m.spec) {
+      const esp = (ctx.sinais[v] || [0, ""])[0], a0 = { ...av }, a1 = { ...av };
+      if (tipos[v] === "dic") { a0[v] = 0; a1[v] = 1; }
+      else if (tipos[v] === "cod") a1[v] = +av[v] + 1;
+      else a1[v] = +av[v] * 1.10;
+      const ef = tenta(() => vuDe(ctx, m, a1) / vuDe(ctx, m, a0) - 1);
+      const coer = (esp === 0 || !Number.isFinite(ef)) ? null : !(ef * esp < 0 && Math.abs(ef) > 0.001);
+      let imp = null, classe = null;
+      const origem = (ctx.sinais[v] || [0, ""])[1];
+      if (coer === false) {
+        const m2 = ajustar(F, idx, m.spec.filter(s => s[0] !== v), m.y, m.ytr);
+        if (m2) { const v2 = tenta(() => vuDe(ctx, m2, av)); imp = Number.isFinite(v2) ? Math.abs(vu0 / v2 - 1) : Infinity; } else imp = Infinity;
+        classe = imp > REGRAS.impacto_sinal ? (CONFIAVEL.has(origem) ? "impedimento" : "a confirmar") : "fragilidade";
+      }
+      out.push({ variavel: v, esperado: esp, efeito: ef, coerente: coer, impacto: imp, classe, origem });
+    }
+    return out;
+  }
+  function omitidas(F, ctx, idx, m, cand, proib) {
+    const usadas = new Set(m.spec.map(s => s[0])), out = [];
+    const base = tenta(() => vuDe(ctx, m, ctx.av)); if (!Number.isFinite(base)) return out;
+    for (const v of cand) {
+      if (usadas.has(v) || !(v in F.cols)) continue;
+      if (proib.some(p => p.every(x => usadas.has(x) || x === v))) continue;
+      let melhor = null;
+      for (const t of transfValidas(colDe(F, v, idx), ctx.tipos[v], ctx.av[v])) {
+        const m2 = ajustar(F, idx, [...m.spec, [v, t]], m.y, m.ytr);
+        if (!m2 || m2.sig[m2.sig.length - 1] > REGRAS.omitida_sig) continue;
+        const vr = tenta(() => vuDe(ctx, m2, ctx.av) / base - 1); if (!Number.isFinite(vr)) continue;
+        if (Math.abs(vr) <= REGRAS.omitida_efeito) continue;
+        if (coerencia(F, ctx, idx, m2).some(c => c.variavel === v && c.coerente === false)) continue;
+        const sg = m2.sig[m2.sig.length - 1];
+        if (!melhor || sg < melhor.sig) melhor = { variavel: v, transf: t, sig: sg, efeito: vr };
+      }
+      if (melhor) out.push(melhor);
+    }
+    return out;
+  }
+
+  /* ---------------- medidas em valor unitário ---------------- */
+  function medidasVu(F, ctx, idx, m) {
+    const inv = INV_Y[m.ytr], n = m.n, k = m.k, obs = colDe(F, ctx.vu, idx);
+    const aj = new Float64Array(n), loo = new Float64Array(n);
+    for (let i = 0; i < n; i++) { aj[i] = inv(m.Y[i] - m.e[i]); loo[i] = inv(m.Y[i] - m.e[i] / (1 - m.h[i])); }
+    if (m.y === ctx.vt) { const bs = colDe(F, ctx.base, idx); for (let i = 0; i < n; i++) { aj[i] /= bs[i]; loo[i] /= bs[i]; } }
+    for (let i = 0; i < n; i++) if (!Number.isFinite(aj[i]) || !Number.isFinite(loo[i])) return [-Infinity, Infinity];
+    const mo = somaArr(obs) / n; let sr = 0, st = 0, se = 0;
+    for (let i = 0; i < n; i++) { sr += (obs[i] - aj[i]) ** 2; st += (obs[i] - mo) ** 2; se += ((loo[i] - obs[i]) / obs[i]) ** 2; }
+    return [1 - (sr / st) * (n - 1) / (n - k - 1), Math.sqrt(se / n)];
+  }
+
+  /* ---------------- avaliação completa (igual para original e alternativos) ---------------- */
+  function avaliarModelo(F, ctx, idx, spec, y, ytr, excl, versao = "", original = false) {
+    const m = ajustar(F, idx, spec, y, ytr);
+    if (!m) return [null, "ajuste inviável"];
+    let pr, vu;
+    try { pr = prever(m, ctx.av, ctx.crit); vu = vuDe(ctx, m, ctx.av); } catch (e) { if (e instanceof NaoAplicavel) return [null, "não aplicável ao avaliando"]; throw e; }
+    const [itens, ext] = itensGrau(F, idx, m, ctx.av, ctx.crit, y === ctx.vt ? ctx.base : null);
+    const gf = Math.min(...Object.values(itens)), gp = grauPrecisao(pr.amplitude);
+    const micro = micronumerosidade(F, idx, m, ctx.tipos), coer = coerencia(F, ctx, idx, m);
+    const [r2aVu, erro] = medidasVu(F, ctx, idx, m), ps = pressupostos(F, ctx, m), f = vu / pr.est;
+    const c = { y, ytr, spec: m.spec, excl: [...excl].sort((a, b) => a - b), versao, n: m.n, k: m.k, R2: m.R2, R2a: m.R2a, r2a_vu: r2aVu, erro,
+      sig: Array.from(m.sig), sigF: m.sigF, F: m.F, itens, ext, gf, gp, amp: pr.amplitude, est: pr.est, vu, ic_vu: [pr.ic_min * f, pr.ic_max * f],
+      micro, coer, comb: combinacaoDic(F, idx, m, ctx.av, ctx.tipos), shapiro: ps.shapiro_p, bp: ps.bp_p, nout: ps.outliers.length, outliers: ps.outliers,
+      cook_max: ps.cook_max, cook_id: ps.cook_id, vif_max: ps.vif_max, moran: ps.moran, pct: ps.pct };
+    const falhas = [];
+    if (gf < ctx.grau) falhas.push("grau de fundamentação abaixo do declarado");
+    if (!micro.ok) falhas.push("micronumerosidade");
+    if (coer.some(x => x.classe === "impedimento")) falhas.push("sinal incoerente com impacto > 5%");
+    else if (!original && coer.some(x => x.classe === "a confirmar")) falhas.push("sinal incoerente com impacto > 5% (sinal a confirmar)");
+    if (!Number.isFinite(erro)) falhas.push("previsão fora da amostra inviável");
+    if (gp < 1) falhas.push("precisão abaixo do Grau I");
+    c.falhas = falhas; c.grau_decl = ctx.grau;
+    return [c, null];
+  }
+  const sinalN = c => [c.coer.filter(x => x.classe === "impedimento" || x.classe === "a confirmar").length, c.coer.filter(x => x.classe === "fragilidade").length];
+  const gfComp = c => REGRAS.premiar_grau_acima ? c.gf : Math.min(c.gf, c.grau_decl);
+  const cmpTupla = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; return 0; };
+  function ordemCmp(a, b) {
+    const pre = c => { const [si, sf] = sinalN(c); return [-gfComp(c), si, sf, (c.omitidas || []).length]; };
+    const pos = c => REGRAS.excl_criterio ? [-c.gp, c.excl.length, c.k] : [-c.gp, c.k];
+    const x = cmpTupla(pre(a), pre(b)); if (x) return x;
+    if (Math.abs(a.erro - b.erro) > REGRAS.tol_erro) return a.erro < b.erro ? -1 : 1;
+    const y = cmpTupla(pos(a), pos(b)); if (y) return y;
+    return (a.erro > b.erro) - (a.erro < b.erro);
+  }
+
+  /* ---------------- ficha: o modelo recebido, lido do Módulo ---------------- */
+  /* Mx = { arquivo, programa, cols:[{nome, tipo, inc, tr, sinal}], dep:{nome, tr}, linhas:[{id, ativo, v}], aval, ref:{R2, central, crit, critAdot, vrAdot}, descs } */
+  function tipoMotor(tipoMod, serie) {
+    const x = Array.from(serie).filter(v => !Number.isNaN(v)), so01 = x.length && x.every(v => v === 0 || v === 1);
+    if (tipoMod === "DICOTOMICA") return "dic";
+    if (tipoMod === "PROXY") return so01 ? "dic" : "quant";
+    if (["CODIGO_ALOCADO", "CODIGO_AJUSTADO", "QUALITATIVA"].includes(tipoMod)) return so01 ? "dic" : "cod";
+    return "quant";
+  }
+  function lerFicha(Mx, baseInformada) {
+    const N = Mx.linhas.length, dep = Mx.dep.nome;
+    const nomes = Mx.cols.map(c => c.nome).filter(n => n !== dep);
+    const cols = {}; for (const n of [dep, ...nomes]) cols[n] = Float64Array.from(Mx.linhas, l => { const v = l.v[n]; return Number.isFinite(v) ? v : NaN; });
+    const tipos = { [dep]: "dep" }; for (const c of Mx.cols) if (c.nome !== dep) tipos[c.nome] = tipoMotor(c.tipo, cols[c.nome]);
+    const ytr = DE_TY[Mx.dep.tr];
+    const modelo = Mx.cols.filter(c => c.inc && c.nome !== dep).map(c => [c.nome, DE_TX[c.tr]]);
+    const desab = []; Mx.linhas.forEach((l, i) => { if (!l.ativo) desab.push(i); });
+    /* variável base (VT = VU × base), como no motor: relação nos dados, descrição da dependente ou resposta do revisor */
+    let area = null, vt = null, vu = null, origemBase = null;
+    const numer = nomes, areasQ = numer.filter(n => tipos[n] === "quant");
+    const d0 = cols[dep], todosPos = a => cols[a].every(x => x > 0);
+    for (const x of numer) {
+      for (const a of areasQ) {
+        if (a === x || !todosPos(a)) continue;
+        const r1 = medianaArr(Array.from(d0, (y, i) => Math.abs((cols[x][i] / cols[a][i]) / y - 1)));
+        if (r1 < 0.01) { vt = x; vu = dep; area = a; break; }
+        const r2 = medianaArr(Array.from(d0, (y, i) => Math.abs((y / cols[a][i]) / cols[x][i] - 1)));
+        if (r2 < 0.01) { vt = dep; vu = x; area = a; break; }
+      }
+      if (area) break;
+    }
+    if (area) { origemBase = "deduzida dos dados (VU = VT ÷ base)"; tipos[vt === dep ? vu : vt] = "dep"; }
+    if (!area && baseInformada && cols[baseInformada]) { area = baseInformada; origemBase = "informada pelo revisor"; }
+    if (!area) {
+      const desc = (Mx.descs || {})[dep] || "";
+      if (desc.includes("/")) {
+        const pos = norm(desc.split("/").slice(1).join("/"));
+        const cb = nomes.filter(n => tipos[n] === "quant" && pos.includes(norm(n)));
+        if (cb.length) { area = cb.reduce((a, b) => (b.length > a.length ? b : a)); origemBase = "lida na descrição da variável dependente"; }
+      }
+    }
+    let vtCalc = false;
+    if (area && vt === null) {
+      if (todosPos(area)) { const nomeVt = `Valor total (${dep} × ${area})`; cols[nomeVt] = Float64Array.from(d0, (y, i) => y * cols[area][i]); tipos[nomeVt] = "dep"; vt = nomeVt; vu = dep; vtCalc = true; }
+      else { area = null; origemBase = null; }
+    }
+    const nAreas = nomes.filter(n => tipos[n] !== "dep" && ehArea(n, tipos[n])).length;
+    return { arquivo: Mx.arquivo, programa: Mx.programa, N, ids: Mx.linhas.map(l => String(l.id)), nomes, cols, tipos, dep, ytr, modelo, desab,
+      r2: Number.isFinite(Mx.ref && Mx.ref.R2) ? Mx.ref.R2 : null, criterio: (Mx.ref && Mx.ref.critAdot) || null,
+      vrAdot: Mx.ref && Number.isFinite(Mx.ref.vrAdot) ? Mx.ref.vrAdot : null, vrArq: Mx.ref && Number.isFinite(Mx.ref.central) ? { crit: Mx.ref.crit || "", v: Mx.ref.central } : null,
+      av: Object.fromEntries(Object.entries(Mx.aval || {}).filter(([k, v]) => Number.isFinite(v) && k !== dep)),
+      vt, vu: vu || dep, base: area, origemBase, vtCalc, nAreas, sinaisArq: Object.fromEntries(Mx.cols.filter(c => c.sinal).map(c => [c.nome, c.sinal])),
+      descs: Mx.descs || {}, coords: acharCoords(nomes, cols) };
+  }
+  const COORD = ["latitude", "longitude", "lat", "long", "lon", "lng", "coordenada", "coordenadas", "utm"];
+  const ehCoord = n => tokens(n).some(t => COORD.includes(t));
+  function acharCoords(nomes, cols) {
+    const lat = nomes.find(n => tokens(n).some(t => t === "latitude" || t === "lat")), lon = nomes.find(n => tokens(n).some(t => ["longitude", "long", "lon", "lng"].includes(t)));
+    return lat && lon && cols[lat].every(Number.isFinite) && cols[lon].every(Number.isFinite) ? [lat, lon] : null;
+  }
+  const idxUsados = F => semExcl(F, F.desab);
+  function reproduzir(F, ctx) {
+    const m = ajustar(F, idxUsados(F), F.modelo, F.dep, F.ytr);
+    if (!m) return { m: null, checks: { ajuste: false } };
+    const checks = {};
+    if (F.r2 !== null) checks["R²"] = Math.abs(m.R2 - F.r2) < 0.001;
+    const alvo = F.vrAdot || (F.vrArq && (F.vrArq.crit === ctx.crit || F.ytr !== "ln") ? F.vrArq.v : null);
+    if (alvo) { const e = tenta(() => prever(m, F.av, ctx.crit).est); checks["valor do avaliando"] = Number.isFinite(e) && Math.abs(e / alvo - 1) < 0.005; }
+    return { m, checks, alvo };
+  }
+  /* critério: lido do arquivo, deduzido do valor gravado, informado pelo revisor; sem efeito fora de ln(y) */
+  function deduzirCriterio(F) {
+    if (F.ytr !== "ln") return { crit: "mediana", origem: "sem efeito (a dependente não está em ln)" };
+    if (F.criterio) return { crit: F.criterio, origem: "lido do arquivo" };
+    const m = ajustar(F, idxUsados(F), F.modelo, F.dep, F.ytr);
+    const refs = [F.vrAdot, F.vrArq && F.vrArq.v].filter(Number.isFinite);
+    if (m) for (const cr of ["mediana", "moda", "media"]) { const e = tenta(() => prever(m, F.av, cr).est); if (refs.some(r => Math.abs(e / r - 1) < 0.005)) return { crit: cr, origem: "deduzido do valor gravado no arquivo" }; }
+    return null;
+  }
+  function contexto(F, resp) {
+    const crit = resp.crit ? { crit: resp.crit, origem: "informado pelo revisor" } : deduzirCriterio(F);
+    let base = F.base;
+    if (base && F.vt && !(+F.av[base] > 0)) base = null;
+    const ctx = { av: { ...F.av }, tipos: { ...F.tipos }, crit: crit.crit, origem_crit: crit.origem, grau: +resp.grau, base, vu: F.vu, vt: base ? F.vt : null, coords: F.coords };
+    const nomes = F.nomes.filter(n => F.tipos[n] !== "dep");
+    const su = {};
+    for (const [n, s] of Object.entries(F.sinaisArq)) su[n] = [s, "lido do arquivo"];
+    for (const [n, s] of Object.entries(resp.sinais || {})) if (s !== null && s !== undefined) su[n] = s ? [s, "informado pelo revisor"] : undefined;
+    ctx.sinais = mapaSinais(nomes, ctx.tipos, base, su);
+    for (const [n, s] of Object.entries(resp.sinais || {})) if (s === 0 && ctx.sinais[n]) ctx.sinais[n] = [0, "sem expectativa (informado pelo revisor)"];
+    /* valor adotado no laudo, em VU */
+    let vr = F.vrAdot, org = "valor adotado gravado no arquivo";
+    if (!vr && F.vrArq && (F.vrArq.crit === ctx.crit || F.ytr !== "ln")) { vr = F.vrArq.v; org = "valor gravado no arquivo"; }
+    if (vr && F.dep === F.vt && base) vr = vr / ctx.av[base];
+    ctx.vu_adotado = vr || null; ctx.origem_adotado = vr ? org : null;
+    return ctx;
+  }
+
+  /* pergunta 3: variável do modelo do laudo sem sinal esperado conhecido cuja retirada muda o VU em mais de 5% */
+  function sinaisPendentes(F, ctx) {
+    const idx = idxUsados(F), m = ajustar(F, idx, F.modelo, F.dep, F.ytr); if (!m) return [];
+    const vu0 = tenta(() => vuDe(ctx, m, ctx.av)), out = [];
+    for (const c of coerencia(F, ctx, idx, m)) {
+      const [s, org] = ctx.sinais[c.variavel] || [0, ""];
+      if (s !== 0 || /revisor|derivada/.test(org)) continue;
+      const m2 = ajustar(F, idx, m.spec.filter(x => x[0] !== c.variavel), m.y, m.ytr), v2 = m2 ? tenta(() => vuDe(ctx, m2, ctx.av)) : NaN;
+      const imp = Number.isFinite(v2) && Number.isFinite(vu0) ? Math.abs(vu0 / v2 - 1) : Infinity;
+      if (imp > REGRAS.impacto_sinal) out.push({ variavel: c.variavel, efeito: c.efeito, impacto: imp, tipo: ctx.tipos[c.variavel] });
+    }
+    return out;
+  }
+
+  /* ---------------- candidatas, derivadas e busca rápida ---------------- */
+  function candidatas(F, ctx) {
+    const cand = [], fora = [], modeloOrig = new Set(F.modelo.map(s => s[0]));
+    for (const n of F.nomes) {
+      const t = ctx.tipos[n]; if (t === "texto" || t === "dep") continue;
+      if (ehCoord(n)) { fora.push([n, "coordenada"]); continue; }
+      if (!(n in ctx.av)) { fora.push([n, "sem valor no avaliando"]); continue; }
+      const c = F.cols[n];
+      if (ctx.av[n] === 0 && c.every(x => x !== 0) && !modeloOrig.has(n)) { fora.push([n, "valor 0 no avaliando tratado como campo em branco"]); continue; }
+      if (c.some(Number.isNaN)) { fora.push([n, "dados em branco"]); continue; }
+      if (nunique(Array.from(c)) < 2) { fora.push([n, "valor constante"]); continue; }
+      cand.push(n);
+    }
+    return [cand, fora];
+  }
+  function derivadas(F, ctx, cand) {
+    const proib = [], novas = [], av = ctx.av, tipos = ctx.tipos;
+    const areas = cand.filter(v => ehArea(v, tipos[v]) && F.cols[v].every(x => x > 0) && (av[v] || 0) > 0);
+    const media = v => somaArr(F.cols[v]) / F.N;
+    for (const [a, b] of comb(areas, 2)) {
+      const [num, den] = media(a) >= media(b) ? [a, b] : [b, a], nome = `${num} ÷ ${den}`;
+      const r = Float64Array.from(F.cols[num], (x, i) => x / F.cols[den][i]);
+      if (nunique(Array.from(r)) < 3) continue;
+      F.cols[nome] = r; av[nome] = av[num] / av[den]; tipos[nome] = "quant"; ctx.sinais[nome] = [0, "variável derivada"];
+      novas.push(nome); proib.push([num, den, nome]);
+    }
+    return [novas, proib];
+  }
+  function kmaxDe(n, grau, ncand) { let k = 0; while (k + 1 <= ncand && n >= NORMA.grau[grau].nmin * (k + 2)) k++; return k; }
+  class Gram {
+    constructor(F, idx, cols, y, ytr) {
+      const n = idx.length, p = cols.length + 1;
+      this.Y = Float64Array.from(colDe(F, y, idx), TR[ytr]);
+      const Z = Array.from({ length: p }, (_, j) => j === 0 ? new Float64Array(n).fill(1) : Float64Array.from(colDe(F, cols[j - 1][0], idx), TR[cols[j - 1][1]]));
+      const sc = Z.map(z => { const s = Math.sqrt(somaArr(z.map(v => v * v))); return s === 0 ? 1 : s; });
+      const Zs = Z.map((z, j) => z.map(v => v / sc[j]));
+      this.G = Array.from({ length: p }, () => new Float64Array(p)); this.g = new Float64Array(p);
+      for (let a = 0; a < p; a++) { for (let b = a; b < p; b++) { let s = 0; for (let i = 0; i < n; i++) s += Zs[a][i] * Zs[b][i]; this.G[a][b] = s; this.G[b][a] = s; } let s = 0; for (let i = 0; i < n; i++) s += Zs[a][i] * this.Y[i]; this.g[a] = s; }
+      this.yy = somaArr(this.Y.map(v => v * v)); const my = somaArr(this.Y) / n; this.sst = somaArr(this.Y.map(v => (v - my) ** 2));
+      this.ix = new Map(cols.map((c, i) => [c[0] + SEP + c[1], i + 1])); this.n = n; this.ytr = ytr; this.y = y;
+    }
+    fit(spec) {
+      const ii = [0]; for (const [v, t] of spec) ii.push(this.ix.get(v + SEP + t));
+      const p = ii.length, n = this.n; if (n - p < 2) return null;
+      const A = ii.map(a => ii.map(b => this.G[a][b])), L = cholesky(A, p); if (!L) return null;
+      let mn = Infinity, mx = 0; for (let j = 0; j < p; j++) { mn = Math.min(mn, L[j][j]); mx = Math.max(mx, L[j][j]); }
+      if (mn < 1e-5 * mx) return null;
+      const Gi = gramInv(invTriL(L, p), p), gi = ii.map(a => this.g[a]);
+      const b = gi.map((_, a) => { let s = 0; for (let c = 0; c < p; c++) s += Gi[a][c] * gi[c]; return s; });
+      let bg = 0; for (let a = 0; a < p; a++) bg += b[a] * gi[a];
+      const sse = this.yy - bg; if (!Number.isFinite(sse) || sse <= 1e-12 * this.sst) return null;
+      const s2 = sse / (n - p), R2 = 1 - sse / this.sst, Fv = p > 1 ? (R2 / (p - 1)) / ((1 - R2) / (n - p)) : 0;
+      let maxp = p > 1 ? 0 : 1; for (let j = 1; j < p; j++) maxp = Math.max(maxp, pBi(b[j] / Math.sqrt(Math.abs(Gi[j][j]) * s2), n - p));
+      return { spec: spec.map(x => [x[0], x[1]]), y: this.y, ytr: this.ytr, R2a: 1 - (1 - R2) * (n - 1) / (n - p), k: p - 1, n, maxp, sigF: p > 1 ? pF(Fv, p - 1, n - p) : 1 };
+    }
+  }
+  const passaLeve = (l, grau) => { const r = NORMA.grau[grau]; return l.maxp <= r.sig && l.sigF <= r.F && l.n >= r.nmin * (l.k + 1); };
+  function buscaLeve(F, idx, cand, ctx, y, ytr, obrig, proib, kmax, kminK, extras, limite, niveis = NIVEIS_BUSCA) {
+    const av = ctx.av, tipos = ctx.tipos, obs = [];
+    const todas = Object.fromEntries(cand.map(v => [v, transfValidas(colDe(F, v, idx), tipos[v], av[v])]));
+    const cols = []; for (const v of cand) for (const t of todas[v]) cols.push([v, t]);
+    const G = new Gram(F, idx, cols, y, ytr);
+    if (!G.Y.every(Number.isFinite)) return [[], G, ["variável dependente inválida nesta transformação"]];
+    const livres = cand.filter(v => !obrig.includes(v));
+    kmax = Math.min(kmax, cand.length);
+    const total = (opc, km) => {
+      let tot = 0;
+      for (let k = Math.max(1, obrig.length); k <= km; k++) for (const c of comb(livres, k - obrig.length)) {
+        let pr = 1; for (const v of [...obrig, ...c]) pr *= opc[v].length; tot += pr;
+        if (tot > 10 * limite) return tot;
+      }
+      return tot;
+    };
+    let opc, i;
+    for (i = 0; i < niveis.length; i++) {
+      const nivel = niveis[i];
+      opc = Object.fromEntries(cand.map(v => { const l = todas[v].filter(t => nivel.includes(t) || (extras[v] || []).includes(t)); return [v, l.length ? l : todas[v].slice(0, 1)]; }));
+      if (total(opc, kmax) <= limite) break;
+    }
+    if (i >= niveis.length) i = niveis.length - 1;
+    if (i > 0) obs.push(`1ª etapa com as transformações ${niveis[i].map(t => NOME_X[t]).join(", ")} (as demais testadas no refinamento)`);
+    while (total(opc, kmax) > limite && kmax > Math.max(kminK, obrig.length + 1, 1)) kmax--;
+    if (kmax < cand.length && total(opc, kmax + 1) > limite && kmax < kmaxDe(idx.length, ctx.grau, cand.length)) obs.push(`modelos com até ${kmax} variáveis`);
+    const res = []; let cont = 0;
+    fora: for (let k = Math.max(1, obrig.length); k <= kmax; k++) {
+      for (const c of comb(livres, k - obrig.length)) {
+        const vs = [...obrig, ...c];
+        if (proib.some(p => p.every(x => vs.includes(x)))) continue;
+        for (const trs of produto(vs.map(v => opc[v]))) {
+          cont++;
+          if (cont > limite) break;
+          const r = G.fit(vs.map((v, j) => [v, trs[j]])); if (r) res.push(r);
+        }
+        if (cont > limite) break;
+      }
+      if (cont > limite) { obs.push(`busca interrompida em ${limite} ajustes (k = ${k})`); break fora; }
+    }
+    return [res, G, obs];
+  }
+  const porR2a = (a, b) => b.R2a - a.R2a;
+  function refinar(F, G, leves, ctx, idx, top) {
+    const av = ctx.av, tipos = ctx.tipos, novos = [], vistos = new Set(leves.map(l => chaveSpec(l.spec)));
+    const ok = leves.filter(l => passaLeve(l, ctx.grau)).sort(porR2a).slice(0, top);
+    for (const l of ok) {
+      let spec = l.spec.map(s => [s[0], s[1]]), best = l.R2a;
+      for (let pass = 0; pass < 2; pass++) {
+        let mudou = false;
+        for (let i = 0; i < spec.length; i++) {
+          const v = spec[i][0]; if (tipos[v] === "dic") continue;
+          for (const t2 of transfValidas(colDe(F, v, idx), tipos[v], av[v])) {
+            if (t2 === spec[i][1]) continue;
+            const s2 = spec.map(s => [s[0], s[1]]); s2[i] = [v, t2];
+            const r = G.fit(s2);
+            if (r && passaLeve(r, ctx.grau) && r.R2a > best + 1e-9) { best = r.R2a; spec = s2; mudou = true; }
+          }
+        }
+        if (!mudou) break;
+      }
+      const ch = chaveSpec(spec);
+      if (!vistos.has(ch)) { vistos.add(ch); const r = G.fit(spec); if (r) novos.push(r); }
+    }
+    return novos;
+  }
+
+  /* ---------------- exclusões com motivo ---------------- */
+  function inconsistencias(F, ctx, idx, cand) {
+    const out = new Map(), add = (i, t) => { if (!out.has(i)) out.set(i, []); out.get(i).push(t); };
+    const vu = F.cols[ctx.vu];
+    for (const i of idx) if (!(Number.isFinite(vu[i]) && vu[i] > 0)) add(i, "valor unitário nulo, negativo ou em branco");
+    if (ctx.vt && ctx.base && !F.vtCalc) for (const i of idx) { const r = (F.cols[ctx.vt][i] / F.cols[ctx.base][i]) / vu[i] - 1; if (Number.isFinite(r) && Math.abs(r) > 0.01) add(i, `VU difere de VT ÷ ${ctx.base} em ${pct(r)}`); }
+    const cs = [...cand.filter(c => c in F.cols), ctx.vu], primeiro = new Map();
+    for (const i of idx) {
+      const ch = cs.map(c => { const x = F.cols[c][i]; return Number.isNaN(x) ? "N" : String(Math.round(x * 1e6) / 1e6); }).join("|");
+      if (primeiro.has(ch)) add(i, `duplicado do dado ${idTxt(F, primeiro.get(ch))}`); else primeiro.set(ch, i);
+    }
+    return out;
+  }
+  function atipicos(F, idx, cols, valores) {
+    const z = REGRAS.z_atipico, out = [];
+    for (const v of cols) {
+      const x = valores ? valores[v] : colDe(F, v, idx);
+      if (Array.from(x).every(Number.isNaN)) continue;
+      const med = medianaArr(Array.from(x)), mad = medianaArr(Array.from(x, t => Math.abs(t - med)));
+      if (!mad) continue;
+      idx.forEach((r, j) => { const xv = x[j]; if (Number.isFinite(xv) && Math.abs(xv - med) / (1.4826 * mad) > z) out.push([r, v, xv]); });
+    }
+    return out;
+  }
+  function detectarExclusoes(F, ctx, idxAll, cand, proib, protegidos, forcados, piso, extras) {
+    const y = ctx.vu, hist = [], excl = [...forcados];
+    const ytrs = ["x"].concat(colDe(F, y, idxAll).every(v => v > 0) ? ["ln"] : []);
+    const T = REGRAS.top_exclusao, rf = REGRAS.residuo_forte, [r2, fq] = REGRAS.residuo_freq;
+    for (let rodada = 1; rodada <= REGRAS.rodadas_exclusao; rodada++) {
+      const ex = new Set(excl), dd = idxAll.filter(i => !ex.has(i)), folga = dd.length - piso;
+      if (folga <= 0) break;
+      const km = Math.max(kmaxDe(dd.length, 1, cand.length), 1);
+      let tops = [];
+      for (const ytr of ytrs) {
+        const [leves] = buscaLeve(F, dd, cand, ctx, y, ytr, [], proib, km, 1, extras, 8000, [["x", "ln"], ["x"]]);
+        tops = tops.concat(leves.filter(l => passaLeve(l, 1)).sort(porR2a).slice(0, Math.floor(T / ytrs.length)));
+      }
+      if (!tops.length) break;
+      const Rm = [], Cm = [];
+      for (const l of tops) { const m = ajustar(F, dd, l.spec, y, l.ytr); if (m) { Rm.push(m.rp); Cm.push(m.cook); } }
+      if (!Rm.length) break;
+      const M = Rm.length, novos = [];
+      dd.forEach((i, j) => {
+        if (protegidos.has(i)) return;
+        let sr = 0, fr = 0, cf = 0; const cv = [];
+        for (let t = 0; t < M; t++) { sr += Rm[t][j]; if (Math.abs(Rm[t][j]) > 2) fr++; if (Cm[t][j] > REGRAS.cook) cf++; cv.push(Cm[t][j]); }
+        const rbar = sr / M, freq = fr / M, cfreq = cf / M, cmed = medianaArr(cv);
+        const resOk = Math.abs(rbar) >= rf || (Math.abs(rbar) >= r2 && freq >= fq), infOk = cfreq >= 0.5;
+        if (resOk || infOk) novos.push({ id: i, tipo: resOk ? "resíduo persistente" : "influência", rodada, r_medio: rbar, freq, cook_freq: cfreq, cook_med: cmed, n_modelos: M });
+      });
+      novos.sort((a, b) => cmpTupla([-Math.abs(a.r_medio), -a.cook_med], [-Math.abs(b.r_medio), -b.cook_med]));
+      const sel = novos.slice(0, folga);
+      if (!sel.length) break;
+      hist.push(...sel); excl.push(...sel.map(o => o.id));
+    }
+    return hist;
+  }
+  const idTxt = (F, i) => String(F.ids[i]).replace(/^dado\s+/i, "");
+  const listaIds = (F, ids) => { const s = ids.map(i => idTxt(F, i)); return s.length === 1 ? s[0] : s.slice(0, -1).join(", ") + " e " + s[s.length - 1]; };
+
+  /* ---------------- achados sobre o original ---------------- */
+  function achadosOriginal(F, ctx, spec, y, ytr) {
+    const desab = F.desab, av = ctx.av, tipos = ctx.tipos, vars = spec.map(s => s[0]), todos = semExcl(F, []);
+    const rodar = (excl, rotulo) => {
+      const idx = semExcl(F, excl), m = ajustar(F, idx, spec, y, ytr);
+      if (!m) return { rotulo, n: idx.length, ok: false };
+      const vu = tenta(() => vuDe(ctx, m, av)); if (!Number.isFinite(vu)) return { rotulo, n: idx.length, ok: false };
+      const [itens] = itensGrau(F, idx, m, av, ctx.crit, y === ctx.vt ? ctx.base : null);
+      return { rotulo, n: m.n, ok: true, vu, R2: m.R2, gf: Math.min(...Object.values(itens)), sig: Object.fromEntries(vars.map((v, j) => [v, m.sig[j + 1]])) };
+    };
+    const base = rodar(desab, "como no laudo");
+    if (!base.ok) return { linhas: [], combos: [], achados: [], leitura: [], erros: [] };
+    const dics = vars.filter(v => tipos[v] === "dic"), usados = semExcl(F, desab), combos = [];
+    for (let r = 2; r <= dics.length; r++) for (const sub of comb(dics, r)) {
+      if (combos.some(c => c.vars.every(x => sub.includes(x)))) continue;
+      const msk = i => sub.every(v => F.cols[v][i] === +av[v]);
+      if (!usados.some(msk)) { const ids = todos.filter(msk); combos.push({ vars: sub, ids, todos_excluidos: ids.length > 0 && ids.every(i => desab.includes(i)) }); }
+    }
+    const linhas = [base];
+    for (const i of desab) linhas.push({ ...rodar(desab.filter(j => j !== i), `reincluindo o dado ${idTxt(F, i)}`), reinc: [i] });
+    for (const c of combos) { const rein = c.ids.filter(i => desab.includes(i)); if (rein.length > 1) linhas.push({ ...rodar(desab.filter(j => !rein.includes(j)), `reincluindo ${listaIds(F, rein)} (combinação do avaliando)`), reinc: rein }); }
+    if (desab.length > 1) linhas.push({ ...rodar([], "todos os dados"), reinc: [...desab] });
+    for (const l of linhas.slice(1)) if (l.ok) l.var = l.vu / base.vu - 1;
+    const lim = REGRAS.sens_exclusao, achados = [], leitura = [];
+    for (const c of combos) {
+      const desc = c.vars.map(v => `${v} = ${br(av[v], 0)}`).join(" e ");
+      if (!c.ids.length) achados.push({ cod: "comb", txt: `nenhum dado da planilha tem a combinação do avaliando (${desc}); o modelo soma efeitos que nunca aparecem juntos na amostra` });
+      else achados.push({ cod: "comb", txt: `nenhum dado usado tem a combinação do avaliando (${desc}); na planilha, só ` + (c.ids.length === 1 ? "o dado " : "os dados ") + listaIds(F, c.ids) + (c.ids.length === 1 ? " tem" : " têm") + " essa combinação" + (c.todos_excluidos ? ", e o autor excluiu " + (c.ids.length === 1 ? "esse dado" : "todos eles") : "") });
+    }
+    for (const l of linhas.slice(1)) if (l.ok && Math.abs(l.var) > lim && l.rotulo !== "todos os dados") {
+      const perde = vars.filter(v => base.sig[v] <= NORMA.grau[ctx.grau].sig && NORMA.grau[ctx.grau].sig < l.sig[v]);
+      achados.push({ cod: "reinc", txt: `${l.rotulo}, o VU muda ${pct(l.var)} (R$ ${br(base.vu)} → R$ ${br(l.vu)})` + (perde.length ? `; ${perde.join(", ")} passa${perde.length > 1 ? "m" : ""} do limite de significância do Grau ${ROMANO[ctx.grau]}` : "") });
+    }
+    for (const c of combos) {
+      const rein = c.ids.filter(i => desab.includes(i));
+      const l = rein.length ? linhas.slice(1).find(x => x.ok && x.reinc && x.reinc.length === rein.length && x.reinc.every((r, j) => r === rein[j])) : null;
+      if (c.todos_excluidos && l) {
+        const sv = c.vars.map(v => `${v}: ${br(base.sig[v] * 100)}% → ${br(l.sig[v] * 100)}%`).join("; ");
+        leitura.push(`O avaliando tem ${c.vars.join(" e ")} ao mesmo tempo. Os únicos dados com essa combinação (${listaIds(F, rein)}) foram excluídos pelo autor, então o valor depende de somar efeitos estimados separadamente. Reincluídos esses dados, o VU passa de R$ ${br(base.vu)} para R$ ${br(l.vu)} (${pct(l.var)}); R² ${br(base.R2, 3)} → ${br(l.R2, 3)}; significância ${sv}. Peça ao autor a justificativa dessas exclusões.`);
+      }
+    }
+    /* passagem 14/10: quanto o modelo do laudo erra nos dados que o autor excluiu (estimativa pela mediana, em VU) */
+    const erros = [];
+    const m0 = ajustar(F, usados, spec, y, ytr);
+    if (m0) for (const i of desab) {
+      const row = linhaDe(F, i); let est = NaN;
+      try { const x0 = x0de(m0, row); let yh = 0; x0.forEach((x, j) => { yh += x * m0.b[j]; }); est = INV_Y[ytr](yh); if (y === ctx.vt) est /= row[ctx.base]; } catch (e) { est = NaN; }
+      const obs = row[ctx.vu]; erros.push({ id: i, obs, est, erro: Number.isFinite(est) && obs > 0 ? est / obs - 1 : NaN });
+    }
+    return { linhas, combos, achados, leitura, vars, dics, erros };
+  }
+
+  /* v1.29.1: quanto um modelo erra nos dados que ele deixou de fora (estimativa pela mediana, em VU); só informa */
+  function errosFora(F, ctx, c) {
+    const out = []; if (!c.excl.length) return { lista: out, rms: NaN, n: 0 };
+    const m = ajustar(F, semExcl(F, c.excl), c.spec, c.y, c.ytr); if (!m) return { lista: out, rms: NaN, n: 0 };
+    for (const i of c.excl) {
+      const row = linhaDe(F, i); let est = NaN;
+      const x0 = x0de(m, row); let yh = 0; x0.forEach((x, j) => { yh += x * m.b[j]; }); est = INV_Y[c.ytr](yh); if (c.y === ctx.vt) est /= row[ctx.base];
+      const obs = row[ctx.vu]; out.push({ id: i, obs, est, erro: Number.isFinite(est) && obs > 0 ? est / obs - 1 : NaN });
+    }
+    const ok = out.filter(x => Number.isFinite(x.erro));
+    return { lista: out, n: ok.length, rms: ok.length ? Math.sqrt(ok.reduce((s, x) => s + x.erro * x.erro, 0) / ok.length) : NaN };
+  }
+
+  /* ---------------- v1.30.0: auditoria dos dados com classificação (passo 2 da passagem) ---------------- */
+  /* Valor atípico = mais de 3,5 desvios robustos da mediana. Classes:
+     "provável erro de digitação": VU inválido, VT ÷ base ≠ VU, área nula, ou atípico 10× maior ou menor que a mediana
+        num dado que os melhores modelos não explicam (resíduo persistente ou Cook);
+     "verificar": duplicado, ou atípico com só uma das duas condições (ordem de grandeza ou não explicado);
+     "legítimo mas extremo": atípico na mesma ordem de grandeza, e os modelos explicam o dado. Só informa: não muda a busca. */
+  const AUD = { erro: "provável erro de digitação", verificar: "verificar", legitimo: "legítimo mas extremo" };
+  const AUD_DEC = { erro: "pedir ao autor a correção; sem ela, o dado não deve ser usado", verificar: "confirmar o dado na fonte", legitimo: "manter; os modelos explicam o dado" };
+  function auditoria(E) {
+    const F = E.F, ctx = E.ctx, itens = [], naoExplica = new Set(E.hist.map(h => h.id));
+    const add = (i, o, classe, txt) => itens.push({ id: i, classe, txt, o, usado: !F.desab.includes(i) });
+    for (const [i, ms] of E.inconsist) for (const t of ms) add(i, "inconsistência", /duplicado/.test(t) ? "verificar" : "erro", t);
+    for (const v of F.nomes) if (ctx.tipos[v] !== "dep" && ehArea(v, ctx.tipos[v])) F.cols[v].forEach((x, i) => { if (Number.isFinite(x) && x <= 0) add(i, "valor impossível", "erro", `${v} = ${br(x)} (área nula ou negativa)`); });
+    const razao = (v, x) => { const med = medianaArr(Array.from(F.cols[v])); return med > 0 && x > 0 ? x / med : NaN; };
+    const classe = (i, r) => { const ordem = Number.isFinite(r) && (r >= 10 || r <= 0.1), nx = naoExplica.has(i); return ordem && nx ? "erro" : ordem || nx ? "verificar" : "legitimo"; };
+    for (const [i, , x] of E.atip_vu) { const r = razao(ctx.vu, Math.exp(x)); add(i, "valor extremo", classe(i, r), `VU ${br(Math.exp(x))} a mais de 3,5 desvios robustos da mediana` + (Number.isFinite(r) ? ` (${br(r, 1)}× a mediana)` : "")); }
+    for (const [i, v, x] of E.atip_x) { const r = razao(v, x); add(i, "valor extremo", classe(i, r), `${v} = ${br(x)} muito afastado da mediana` + (Number.isFinite(r) ? ` (${br(r, 1)}× a mediana)` : "")); }
+    const ordem = { erro: 0, verificar: 1, legitimo: 2 };
+    itens.sort((a, b) => ordem[a.classe] - ordem[b.classe] || a.id - b.id);
+    return itens;
+  }
+
+  /* ---------------- v1.30.0: perfil do avaliando — vizinhos e alavancagem (passo 3 da passagem) ---------------- */
+  /* Distância euclidiana nas variáveis do modelo do laudo, padronizadas (média e desvio de todos os dados); áreas e
+     renda em ln. Os k = 5 mais parecidos (usados ou excluídos pelo autor). Concordam se o coeficiente de variação
+     do VU deles for até 15%. Achado quando o valor do laudo fica fora do intervalo deles e a mais de 15% da mediana.
+     Alavancagem do avaliando no modelo do laudo contra a maior da amostra. */
+  const VIZ = { k: 5, cv: 0.15, dif: 0.15 };   // achado: laudo fora do intervalo dos 5 e a mais de 15% da mediana deles
+  function vizinhos(E) {
+    const F = E.F, ctx = E.ctx, av = ctx.av;
+    const vars = F.modelo.map(s => s[0]).filter(v => !v.includes("÷") && Number.isFinite(+av[v]));
+    if (!vars.length) return null;
+    const usaLn = v => (ehArea(v, ctx.tipos[v]) || tokens(v).some(t => t.startsWith("renda"))) && F.cols[v].every(x => x > 0) && av[v] > 0;
+    const esc = vars.map(v => {
+      const f = usaLn(v) ? Math.log : (x => x), xs = Array.from(F.cols[v], f), mu = somaArr(xs) / xs.length;
+      const sd = Math.sqrt(somaArr(xs.map(x => (x - mu) ** 2)) / (xs.length - 1));
+      return { v, f, mu, sd, ln: usaLn(v) };
+    }).filter(e => e.sd > 0);
+    const z0 = esc.map(e => (e.f(+av[e.v]) - e.mu) / e.sd);
+    const dist = [];
+    for (let i = 0; i < F.N; i++) {
+      let d2 = 0, ok = true;
+      esc.forEach((e, j) => { const z = (e.f(F.cols[e.v][i]) - e.mu) / e.sd; if (!Number.isFinite(z)) ok = false; d2 += (z - z0[j]) ** 2; });
+      const vu = F.cols[ctx.vu][i];
+      if (ok && Number.isFinite(vu)) dist.push({ id: i, d: Math.sqrt(d2), vu, usado: !F.desab.includes(i) });
+    }
+    dist.sort((a, b) => a.d - b.d || a.id - b.id);
+    const k = Math.min(VIZ.k, dist.length), viz = dist.slice(0, k);
+    const vus = viz.map(x => x.vu), mu = somaArr(vus) / k, sd = k > 1 ? Math.sqrt(somaArr(vus.map(x => (x - mu) ** 2)) / (k - 1)) : NaN;
+    /* alavancagem do avaliando no modelo do laudo */
+    let h0 = NaN, hMax = NaN, hId = null;
+    const m = E.repro && E.repro.m;
+    if (m) {
+      const x0 = x0de(m, av); let q = 0; for (let a = 0; a < x0.length; a++) for (let c = 0; c < x0.length; c++) q += x0[a] * m.XtXi[a][c] * x0[c];
+      h0 = q; m.h.forEach((h, j) => { if (!(h <= hMax)) { hMax = h; hId = m.idx[j]; } });
+    }
+    const va = ctx.vu_adotado || (E.orig && E.orig.vu), mi = Math.min(...vus), ma = Math.max(...vus), md = medianaArr(vus);
+    const achado = k >= 3 && (va < mi || va > ma) && Math.abs(va / md - 1) > VIZ.dif;
+    return { achado, vars: esc.map(e => e.v + (e.ln ? " (ln)" : "")), viz, k, media: mu, cv: sd / mu, concordam: sd / mu <= VIZ.cv, min: Math.min(...vus), max: Math.max(...vus), mediana: medianaArr(vus), h0, hMax, hId };
+  }
+
+  /* ---------------- v1.31.0: estabilidade (passo 7 da passagem) ---------------- */
+  /* Para o modelo do laudo e as 3 primeiras opções: o VU refeito sem cada dado usado (mesmas variáveis e
+     transformações) e 1.000 reamostragens dos dados usados, com reposição e semente fixa (o resultado se repete).
+     Só informa: não entra nos critérios de escolha. */
+  const ESTAB = { reamostras: 1000, semente: 20261015 };
+  function estabilidade(E, c) {
+    const F = E.F, ctx = E.ctx, idx = semExcl(F, c.excl);
+    const m0 = ajustar(F, idx, c.spec, c.y, c.ytr); if (!m0) return null;
+    const vu0 = tenta(() => vuDe(ctx, m0, ctx.av)); if (!Number.isFinite(vu0)) return null;
+    const sem = [];
+    for (const i of idx) {
+      const m = ajustar(F, idx.filter(j => j !== i), c.spec, c.y, c.ytr), v = m ? tenta(() => vuDe(ctx, m, ctx.av)) : NaN;
+      if (Number.isFinite(v)) sem.push({ id: i, vu: v, var: v / vu0 - 1 });
+    }
+    sem.sort((a, b) => Math.abs(b.var) - Math.abs(a.var) || a.id - b.id);
+    const rnd = mulberry32(ESTAB.semente), n = idx.length, boot = []; let falhas = 0;
+    for (let b = 0; b < ESTAB.reamostras; b++) {
+      const am = Array.from({ length: n }, () => idx[Math.floor(rnd() * n)]);
+      const m = ajustar(F, am, c.spec, c.y, c.ytr), v = m ? tenta(() => vuDe(ctx, m, ctx.av)) : NaN;
+      if (Number.isFinite(v) && v > 0) boot.push(v); else falhas++;
+    }
+    boot.sort((a, b) => a - b);
+    const q = p => { if (!boot.length) return NaN; const h = (boot.length - 1) * p, lo = Math.floor(h); return boot[lo] + (boot[Math.min(lo + 1, boot.length - 1)] - boot[lo]) * (h - lo); };
+    const p10 = q(0.10), p50 = q(0.50), p90 = q(0.90);
+    return { vu: vu0, semMin: sem.length ? Math.min(...sem.map(x => x.vu)) : NaN, semMax: sem.length ? Math.max(...sem.map(x => x.vu)) : NaN, maiores: sem.slice(0, 3),
+      p10, p50, p90, amp: (p90 - p10) / p50, falhas, n: ESTAB.reamostras };
+  }
+
+  /* ---------------- preparação da análise ---------------- */
+  function preparar(F, ctx, repro) {
+    const avisos = [], d = F;   // as colunas derivadas entram na própria ficha (cópia de trabalho)
+    const [cand, fora] = candidatas(F, ctx);
+    const [novas, proib] = derivadas(F, ctx, cand); cand.push(...novas);
+    const todos = semExcl(F, []);
+    const dOrig = idxUsados(F), specO = F.modelo;
+    const [orig, motivoO] = avaliarModelo(F, ctx, dOrig, specO, F.dep, F.ytr, F.desab, "laudo", true);
+    if (!orig) throw new Error(`O modelo do laudo não pôde ser avaliado (${motivoO}).`);
+    const mO = ajustar(F, dOrig, specO, F.dep, F.ytr);
+    orig.omitidas = omitidas(F, ctx, dOrig, mO, cand, proib);
+    const achados = achadosOriginal(F, ctx, specO, F.dep, F.ytr);
+    const kOrig = specO.length, piso = NORMA.grau[ctx.grau].nmin * (kOrig + 1);
+    const extras = {}; for (const [v, t] of specO) (extras[v] = extras[v] || []).push(t);
+    const inc = inconsistencias(F, ctx, todos, cand);
+    const vuAll = F.cols[ctx.vu], lnvu = { _lnvu: Float64Array.from(todos, i => vuAll[i] > 0 ? Math.log(vuAll[i]) : NaN) };
+    const atipVu = atipicos(F, todos, ["_lnvu"], lnvu);
+    const atipX = atipicos(F, todos, cand.filter(v => ctx.tipos[v] === "quant" && !v.includes("÷")));
+    const dDet = todos.filter(i => !inc.has(i));
+    const hist = detectarExclusoes(F, ctx, dDet, cand, proib, new Set(), [], piso, extras);
+    const diretas = [...new Set([...inc.keys(), ...hist.filter(o => o.rodada === 1).map(o => o.id)])].sort((a, b) => a - b);
+    const cascata = [...new Set(hist.filter(o => o.rodada > 1).map(o => o.id))].sort((a, b) => a - b);
+    const laudo = [...F.desab].sort((a, b) => a - b);
+    const motivos = new Map(), addM = (i, o) => { if (!motivos.has(i)) motivos.set(i, []); motivos.get(i).push(o); };
+    for (const [i, ms] of inc) for (const t of ms) addM(i, { tipo: "inconsistência", txt: `inconsistência: ${t}` });
+    for (const o of hist) {
+      let txt = o.tipo === "resíduo persistente"
+        ? `resíduo persistente: resíduo padronizado médio ${br(o.r_medio)} nos ${o.n_modelos} melhores modelos, acima de 2σ em ${fixPy(o.freq * 100, 0)}% deles`
+        : `influência: distância de Cook > 1 em ${fixPy(o.cook_freq * 100, 0)}% dos ${o.n_modelos} melhores modelos (mediana ${br(o.cook_med)})`;
+      if (o.rodada > 1) txt += ` — EM CASCATA (só aparece depois de outras exclusões, rodada ${o.rodada})`;
+      addM(o.id, { tipo: o.tipo, txt, cascata: o.rodada > 1 });
+    }
+    for (const [i, , x] of atipVu) addM(i, { tipo: "valor atípico", txt: `valor atípico: valor unitário ${br(Math.exp(x))} a mais de ${br(REGRAS.z_atipico, 1)} desvios robustos da mediana` });
+    for (const [i, v, x] of atipX) addM(i, { tipo: "atípico em variável", txt: `${v} = ${br(x)} muito afastado da mediana`, info: true });
+    for (const i of F.desab) addM(i, { tipo: "autor", txt: "excluído também pelo autor", info: true });
+    const versoes = [];
+    const un = (...ls) => [...new Set(ls.flat())].sort((a, b) => a - b);
+    for (const [rot, ex] of [["todos os dados", []], ["exclusões diretas", un(diretas)], ["diretas + cascata", un(diretas, cascata)], ["exclusões do laudo", laudo], ["diretas + atípicos", un(diretas, atipVu.map(a => a[0]))]]) {
+      if (F.N - ex.length < piso) continue;
+      if (versoes.some(v => v.excl.length === ex.length && v.excl.every((x, j) => x === ex[j]))) continue;
+      versoes.push({ rotulo: rot, excl: ex, ref: rot === "exclusões do laudo" && !REGRAS.laudo_disputa });
+    }
+    const ys = [ctx.vu].concat(ctx.vt ? [ctx.vt] : []);
+    const tarefas = []; versoes.forEach((v, i) => { for (const y of ys) for (const t of YTRS) tarefas.push({ y, ytr: t, versao: i }); });
+    return { F, ctx, repro, achados, cand, fora, proib, obrig: [], extras, k_orig: kOrig, piso, orig, versoes, motivos, atip_x: atipX, atip_vu: atipVu, inconsist: inc, hist,
+      tarefas, feitas: 0, candidatos: [], candRef: [], estat: { ajustes: 0, avaliados: 0, falhas: {} }, limitacoes: [], avisos, ys, concluido: false, tempo: 0 };
+  }
+  function executarTarefa(E, tf) {
+    const F = E.F, ctx = E.ctx, v = E.versoes[tf.versao], dd = semExcl(F, v.excl), y = tf.y, ytr = tf.ytr;
+    if ((ytr === "ln" || ytr === "1/x") && colDe(F, y, dd).some(x => x <= 0)) return;
+    const obrig = [...new Set([...E.obrig, ...(y === ctx.vt ? [ctx.base] : [])])], cand = [...E.cand];
+    if (y === ctx.vt && !cand.includes(ctx.base)) return;
+    const kmax = kmaxDe(dd.length, ctx.grau, cand.length); if (kmax < 1) return;
+    let [leves, G, obs] = buscaLeve(F, dd, cand, ctx, y, ytr, obrig, E.proib, kmax, E.k_orig, E.extras, REGRAS.limite_ajustes);
+    E.estat.ajustes += leves.length; E.limitacoes.push(...obs);
+    leves = leves.concat(refinar(F, G, leves, ctx, dd, REGRAS.refinar_top));
+    const ok = leves.filter(l => passaLeve(l, ctx.grau)).sort(porR2a);
+    const vistos = new Set(); let nAv = 0;
+    const origKey = [F.dep, F.ytr, conjSpec(E.orig.spec), E.orig.excl.join(",")].join("|");
+    const destino = v.ref ? E.candRef : E.candidatos;
+    for (const l of ok) {
+      const ch = chaveSpec(l.spec); if (vistos.has(ch)) continue; vistos.add(ch);
+      if (nAv >= REGRAS.avaliar_por_etapa) break;
+      nAv++;
+      const [c, motivo] = avaliarModelo(F, ctx, dd, l.spec, y, ytr, v.excl, v.rotulo);
+      E.estat.avaliados++;
+      if (!c) { E.estat.falhas[motivo] = (E.estat.falhas[motivo] || 0) + 1; continue; }
+      if (c.falhas.length) { for (const fl of c.falhas) E.estat.falhas[fl] = (E.estat.falhas[fl] || 0) + 1; continue; }
+      if ([y, ytr, conjSpec(c.spec), c.excl.join(",")].join("|") === origKey) continue;
+      destino.push(c);
+    }
+  }
+
+  /* ---------------- ordenação, omitidas e comparação ---------------- */
+  const CRITERIOS = [
+    ["Grau de fundamentação (itens 2, 4, 5 e 6)", c => gfComp(c), 1, 0, true],
+    ["Sinais coerentes", c => { const [a, b] = sinalN(c); return -(a * 100 + b); }, 1, 0, true],
+    ["Variável relevante omitida", c => -(c.omitidas || []).length, 1, 0, true],
+    ["Erro de previsão fora da amostra (VU)", c => c.erro, -1, "tol_erro", true],
+    ["Grau de precisão", c => c.gp, 1, 0, true],
+    ["Dados excluídos", c => c.excl.length, -1, 0, "excl"],
+    ["Resíduos acima de 2σ", c => c.nout, -1, 1, true],
+    ["Normalidade (Shapiro-Wilk p ≥ 0,05)", c => +(Number.isFinite(c.shapiro) && c.shapiro >= REGRAS.normalidade_p), 1, 0, true],
+    ["Homocedasticidade (Breusch-Pagan p ≥ 0,05)", c => +(Number.isFinite(c.bp) && c.bp >= REGRAS.homoc_p), 1, 0, true]
+  ];
+  const ORDEM = ["Grau de fundamentação (itens 2, 4, 5 e 6)", "Sinais coerentes", "Variável relevante omitida", "Erro de previsão fora da amostra (VU)", "Grau de precisão", "Dados excluídos"];
+  function cmpCrit(o, a, sentido, tol) { if (typeof tol === "string") tol = REGRAS[tol]; if (Math.abs(a - o) <= tol) return 0; return (a - o) * sentido > 0 ? 1 : -1; }
+  function comparar(orig, alt) {
+    const linhas = CRITERIOS.filter(([, , , , dec]) => dec !== "excl" || REGRAS.excl_criterio).map(([nome, f, sentido, tol, dec]) => ({ criterio: nome, res: cmpCrit(f(orig), f(alt), sentido, tol), decisivo: !!dec }));
+    const melhor = linhas.filter(l => l.decisivo && l.res > 0).map(l => l.criterio), pior = linhas.filter(l => l.decisivo && l.res < 0).map(l => l.criterio);
+    const classe = melhor.length && !pior.length ? "domina" : melhor.length && pior.length ? "troca" : !melhor.length && !pior.length ? "equivalente" : "pior";
+    let pelaOrdem = null, primeiro = null;
+    for (const nome of ORDEM) { const l = linhas.find(x => x.criterio === nome); if (l && l.res !== 0) { pelaOrdem = l.res > 0; primeiro = nome; break; } }
+    if (pelaOrdem === null && alt.k !== orig.k) { pelaOrdem = alt.k < orig.k; primeiro = "Número de variáveis"; }
+    return { linhas, melhor, pior, classe, melhor_pela_ordem: !!pelaOrdem, decidido_por: primeiro };
+  }
+  function selecionar(E, lista, maxOp) {
+    const F = E.F, ctx = E.ctx, cs = [...lista].sort(ordemCmp);
+    const opcoes = [], vistos = new Set(), reprovados = new Set(); let checados = 0, parou = false;
+    for (const c of cs) {
+      const k = c.y + "|" + conjVars(c.spec), k2 = conjVars(c.spec) + "|" + c.excl.join(",") + "|" + Math.round(c.vu), k3 = c.y + "|" + conjVars(c.spec) + "|" + c.excl.join(",");
+      if (vistos.has(k) || vistos.has("2|" + k2) || reprovados.has(k3)) continue;
+      if (opcoes.length >= maxOp * 3) break;
+      if (checados >= REGRAS.checar_omitidas_max) { parou = true; break; }
+      const dd = semExcl(F, c.excl), m = ajustar(F, dd, c.spec, c.y, c.ytr);
+      c.omitidas = omitidas(F, ctx, dd, m, E.cand.filter(v => v in F.cols), E.proib); checados++;
+      if (c.omitidas.length) { reprovados.add(k3); continue; }
+      vistos.add(k); vistos.add("2|" + k2); c.comparacao = comparar(E.orig, c); opcoes.push(c);
+    }
+    return { cs, opcoes, checados, parou };
+  }
+  /* passagem 14/10 (passo 8): preferir a forma usual — a área base no modelo; razão entre áreas sem a base fica depois */
+  const formaUsual = (E, c) => !E.ctx.base || !c.spec.some(([v]) => v.includes("÷")) || c.spec.some(([v]) => v === E.ctx.base);
+  function ordenarOpcoes(E, opcoes) {
+    const dom = opcoes.filter(c => c.comparacao.classe === "domina");
+    const melhores = opcoes.filter(c => c.comparacao.classe !== "domina" && c.comparacao.melhor_pela_ordem);
+    const resto = opcoes.filter(c => !dom.includes(c) && !melhores.includes(c));
+    const usual = g => [...g.filter(c => formaUsual(E, c)), ...g.filter(c => !formaUsual(E, c))];
+    return [...usual(dom), ...usual(melhores), ...usual(resto)];
+  }
+  function concluir(E) {
+    const S1 = selecionar(E, E.candidatos, REGRAS.opcoes);
+    E.opcoes = ordenarOpcoes(E, S1.opcoes).slice(0, REGRAS.opcoes);
+    E.n_checadas = S1.checados;
+    if (S1.parou && S1.opcoes.length < REGRAS.opcoes) E.limitacoes.push(`teste de variável omitida feito nos ${S1.checados} primeiros modelos da ordem; os demais não foram checados`);
+    const dist = [], vs = new Set();
+    for (const c of S1.cs) { const k = c.y + "|" + conjVars(c.spec) + "|" + c.excl.join(","); if (vs.has(k)) continue; vs.add(k); dist.push(c.vu); }
+    E.dist = dist;
+    /* referência: o melhor com as exclusões do autor (não disputa a escolha) */
+    if (E.candRef.length) { const S2 = selecionar(E, E.candRef, REGRAS.opcoes); E.ref = ordenarOpcoes(E, S2.opcoes)[0] || null; }
+    E.concluido = true;
+  }
+
+  /* ---------------- execução em etapas (para a tela não travar) ---------------- */
+  async function rodar(E, aoProgresso) {
+    const t0 = performance.now(); let ult = t0;
+    while (E.feitas < E.tarefas.length) {
+      executarTarefa(E, E.tarefas[E.feitas]); E.feitas++;
+      if (aoProgresso && performance.now() - ult > 60) { ult = performance.now(); aoProgresso(E.feitas, E.tarefas.length); await new Promise(r => setTimeout(r, 0)); }
+    }
+    if (aoProgresso) { aoProgresso(E.feitas, E.tarefas.length, "comparando"); await new Promise(r => setTimeout(r, 0)); }
+    concluir(E);
+    E.aud = auditoria(E); E.viz = vizinhos(E);   // v1.30.0
+    if (aoProgresso) { aoProgresso(E.feitas, E.tarefas.length, "estabilidade"); await new Promise(r => setTimeout(r, 0)); }
+    E.estab = [];   // v1.31.0
+    for (const [rot, c] of [["Laudo", E.orig], ...(E.opcoes || []).slice(0, 3).map((c, j) => [`Opção ${j + 1}`, c])]) {
+      E.estab.push({ rot, c, r: estabilidade(E, c) });
+      await new Promise(r => setTimeout(r, 0));
+    }
+    E.tempo += (performance.now() - t0) / 1000;
+    return E;
+  }
+
+  return { fixPy, NORMA, REGRAS, ROMANO, NOME_X, NOME_Y, FMT_X, TR, INV_Y, DE_TX, DE_TY, PARA_TX, PARA_TY, br, pct, norm, tokens, ehArea, idTxt, listaIds,
+    lerFicha, contexto, deduzirCriterio, sinaisPendentes, errosFora, auditoria, vizinhos, AUD, AUD_DEC, VIZ, estabilidade, ESTAB, comparar, ordemCmp, sinalN, reproduzir, ajustar, prever, vuDe, tenta, coerencia, avaliarModelo, preparar, executarTarefa, concluir, rodar,
+    itensGrau, pressupostos, vif, corrMat, inconsistencias, atipicos, candidatas, derivadas, semExcl, idxUsados, colDe, grauDe, minimoMicro, mapaSinais, NaoAplicavel };
+})();
+
+/* ---------- relatório para o agente do Copilot (.txt, títulos fixos, passagem de 14/10/2026) ---------- */
+function raG6(x, sinal) {   // formato "%.6g" do Python
+  if (!Number.isFinite(x)) return String(x);
+  let s;
+  if (x === 0) s = "0";
+  else {
+    const [mant, ex] = x.toExponential(5).split("e"), E = +ex;
+    if (E < -4 || E >= 6) s = mant.replace(/\.?0+$/, "") + "e" + (E < 0 ? "-" : "+") + String(Math.abs(E)).padStart(2, "0");
+    else { s = x.toFixed(Math.max(0, 5 - E)); if (s.includes(".")) s = s.replace(/\.?0+$/, ""); }
+  }
+  return (sinal && x >= 0 ? "+" : "") + s;
+}
+function raRelatorio(E, meta) {
+  const F = E.F, ctx = E.ctx, o = E.orig, A = E.achados, R = RA, br = R.br, pct = R.pct, ROM = R.ROMANO, resp = E.resp || {};
+  const dado = i => "dado " + R.idTxt(F, i), dados = ids => ids.length ? ids.map(i => R.idTxt(F, i)).join(", ") : "nenhum";
+  const nomeX = (v, t) => R.FMT_X[t].replace("{}", v.includes("÷") && t !== "x" ? `(${v})` : v);
+  const eq = (spec, b, y, ytr) => `${R.FMT_X[ytr].replace("{}", y)} = ${raG6(b[0])} ` + spec.map(([v, t], j) => `${raG6(b[j + 1], true)}·${nomeX(v, t)}`).join(" ");
+  const sinalTxt = s => s > 0 ? "+" : s < 0 ? "−" : "0";
+  const critNome = { moda: "moda", mediana: "mediana", media: "média" };
+  const L = [], p = s => L.push(s);
+  const m = E.repro && E.repro.m, base = ctx.base, ab = base ? ctx.av[base] : null, ehVt = F.dep === F.vt;
+  const dOrig = R.idxUsados(F);
+
+  p(`# RELATÓRIO DO MÓDULO — ${F.arquivo} — ${meta.data} — Módulo v${meta.versao}`);
+  p(`Regras: motor_inferencia v4.4 levado para o Módulo, com a passagem de 14/10/2026. Números em pt-BR. VU = valor unitário; VT = valor total.`);
+
+  /* 1 */
+  p(""); p("## 1. PARA CONFERIR COM O LAUDO");
+  const ck = (E.repro && E.repro.checks) || {}, ok = Object.keys(ck).length && Object.values(ck).every(Boolean);
+  p(`Reprodução do modelo a partir do arquivo: ${ok ? "CONFERE (" + Object.keys(ck).join(", ") + ")" : Object.keys(ck).length ? "NÃO CONFERE (" + Object.entries(ck).map(([k, v]) => `${k}: ${v ? "confere" : "não confere"}`).join("; ") + "); o revisor mandou seguir" : "não conferida (o arquivo não traz R² nem valor do avaliando)"}`);
+  if (m) {
+    p(`Equação: ${eq(m.spec, m.b, F.dep, F.ytr)}`);
+    p(`Variável dependente: ${F.dep} (${R.NOME_Y[F.ytr]}); variável base: ${base ? `${base} (${F.origemBase})` : "não identificada"}`);
+    p(`Dados: ${F.N} na amostra; ${m.n} usados; desabilitados pelo autor: ${dados(F.desab)}`);
+    p(`k = ${m.k}; R = ${br(Math.sqrt(m.R2), 4)}; R² = ${br(m.R2, 4)}; R² ajustado = ${br(m.R2a, 4)}; F = ${br(m.F)} (significância ${br(m.sigF * 100, 4)}%)`);
+    const vm = F.modelo.map(s => s[0]), outras = F.nomes.filter(n => !vm.includes(n) && F.tipos[n] !== "dep" && n in ctx.av);
+    p(`Avaliando: ${[...vm, ...outras].filter(n => n in ctx.av).map(n => `${n} = ${br(ctx.av[n])}`).join("; ")}`);
+    const pr = R.tenta(() => R.prever(m, ctx.av, ctx.crit).est);
+    let lin = `Valor pelo critério (${critNome[ctx.crit]}, ${ctx.origem_crit}): `;
+    if (ehVt) lin += `valor total R$ ${br(pr)}; valor unitário R$ ${br(o.vu)}`;
+    else lin += `valor unitário R$ ${br(pr)}` + (base && ab ? `; valor total R$ ${br(pr * ab)} (× ${base} = ${br(ab)})` : "");
+    p(lin);
+    if (F.ytr === "ln") p(`Pelos três critérios: ${["moda", "mediana", "media"].map(c => `${critNome[c]} R$ ${br(R.tenta(() => R.prever(m, ctx.av, c).est))}`).join("; ")}`);
+    if (ctx.vu_adotado) p(`Valor unitário adotado (${ctx.origem_adotado}): R$ ${br(ctx.vu_adotado)}` + (Math.abs(o.vu / ctx.vu_adotado - 1) > 0.005 ? ` — difere do calculado (${pct(o.vu / ctx.vu_adotado - 1)})` : ""));
+    const prc = (() => { try { return R.prever(m, ctx.av, ctx.crit); } catch (e) { return null; } })();
+    if (prc) p(`IC 80%: R$ ${br(prc.ic_min)} a R$ ${br(prc.ic_max)}; campo de arbítrio (±15% da estimativa central): R$ ${br(prc.est * 0.85)} a R$ ${br(prc.est * 1.15)}${ehVt ? " (valores totais)" : ""}`);
+    const it = o.itens, k = m.k, gD = ctx.grau, nm = R.NORMA.grau;
+    let smaxV = m.spec[0] ? m.spec[0][0] : "", smax = -1; m.spec.forEach(([v], j) => { if (m.sig[j + 1] > smax) { smax = m.sig[j + 1]; smaxV = v; } });
+    const ext = o.ext;
+    p(`Fundamentação (itens calculáveis da Tabela 1): item 2 (dados) n = ${m.n}, mínimos ${6 * (k + 1)} (III), ${4 * (k + 1)} (II), ${3 * (k + 1)} (I) → ${ROM[it[2]]}; ` +
+      `item 4 (extrapolação) ${ext.fora.length ? ext.fora.map(f => `${f.variavel} ${br(f.x)} fora de [${br(f.lo)}; ${br(f.hi)}], efeito ${pct(f.efeito, 1, false)}`).join("; ") + (ext.fora.length > 1 ? `; simultâneo ${pct(ext.simultaneo, 1, false)}` : "") : "nenhuma"} → ${ROM[it[4]]}; ` +
+      `item 5 (maior significância) ${smaxV} ${br(smax * 100)}% → ${ROM[it[5]]}; item 6 (F) ${br(m.sigF * 100, 4)}% → ${ROM[it[6]]}. Grau pelos itens 2, 4, 5 e 6: ${ROM[o.gf]} (declarado: ${ROM[gD]})`);
+    p(`Significância por regressor: ${m.spec.map(([v, t], j) => `${v} [${R.NOME_X[t]}] ${br(m.sig[j + 1] * 100)}%`).join("; ")}`);
+    const mi = o.micro;
+    p(`Micronumerosidade (mínimo ${mi.minimo} por nível): ${mi.detalhes.length ? mi.detalhes.map(x => `${x.variavel} [${x.tipo === "dic" ? "dicotômica" : "código"}]: ${x.contagem.map(([a, b]) => `${br(a, 0)}→${b}`).join(", ")} ${x.ok ? "OK" : "ABAIXO do mínimo"}`).join("; ") : "sem dicotômicas ou códigos no modelo"}`);
+    p(`Precisão: amplitude do IC 80% = ${pct(o.amp, 1, false)} → grau ${ROM[o.gp] || "insuficiente"}`);
+    p("Itens 1 e 3 da Tabela 1 (caracterização do avaliando e identificação dos dados) ficam com a leitura do laudo.");
+  }
+
+  /* 2 */
+  p(""); p("## 2. PREMISSAS ADOTADAS");
+  p(`Grau de fundamentação declarado: ${ROM[ctx.grau]} (${resp.grauOrigem || "informado pelo revisor"})`);
+  p(`Critério da estimativa: ${critNome[ctx.crit]} (${ctx.origem_crit})`);
+  p(`Variável base: ${base ? `${base} (${F.origemBase})` : "não identificada" + (F.nAreas > 1 ? " (o revisor não indicou; áreas sem sinal esperado; sem modelos por valor total)" : " (sem modelos por valor total)")}`);
+  if (F.vtCalc && base) p(`Valor total calculado como ${F.dep} × ${base} (o arquivo não tem a coluna).`);
+  p(`Valor adotado no laudo (VU): ${ctx.vu_adotado ? `R$ ${br(ctx.vu_adotado)} (${ctx.origem_adotado})` : `não gravado no arquivo; usado o valor recalculado R$ ${br(o.vu)}`}. Se o laudo trouxer outro, o agente aponta a diferença.`);
+  p(`Mapa de sinais (efeito esperado no VU): ${Object.entries(ctx.sinais).map(([v, [s, org]]) => `${v} ${sinalTxt(s)} (${org})`).join("; ")}`);
+  const cods = E.cand.filter(v => ctx.tipos[v] === "cod"), dics = E.cand.filter(v => ctx.tipos[v] === "dic");
+  p(`Tipos: códigos alocados ${cods.join(", ") || "nenhum"}; dicotômicas ${dics.join(", ") || "nenhuma"}. Variável com só dois valores entra só em x (as transformações dão o mesmo modelo).`);
+  if (E.fora.length) p(`Fora da busca: ${E.fora.map(([v, mm]) => `${v} (${mm})`).join("; ")}`);
+  const der = E.cand.filter(v => v.includes("÷")); if (der.length) p(`Variáveis derivadas criadas para a busca: ${der.join(", ")}`);
+  if (ctx.coords) p(`Coordenadas: ${ctx.coords.join(" e ")} (usadas só no I de Moran).`);
+  p("Exclusões de dados, justificadas ou não, não são critério de escolha: a versão com as exclusões do autor disputa como as outras e o modelo do laudo é comparado como está. O erro de cada modelo nos dados que ele deixou de fora aparece só como informação.");
+
+  /* 3 */
+  p(""); p("## 3. IMPEDIMENTOS");
+  const imp = [];
+  if (m) {
+    const it = o.itens, gD = ctx.grau, nm = R.NORMA.grau[gD], k = m.k;
+    if (it[2] < gD) imp.push(`Dados insuficientes para o Grau ${ROM[gD]} — n = ${m.n}; mínimo ${nm.nmin}(k+1) = ${nm.nmin * (k + 1)} — NBR 14653-2, Tabela 1, item 2`);
+    if (it[4] < gD) imp.push(`Extrapolação acima do admitido para o Grau ${ROM[gD]} — ${o.ext.fora.map(f => `${f.variavel}: avaliando ${br(f.x)} fora de [${br(f.lo)}; ${br(f.hi)}]${f.cond_a ? "" : " (além do dobro do limite superior ou abaixo da metade do inferior)"}, efeito ${pct(f.efeito, 1, false)}`).join("; ")}${o.ext.fora.length > 1 ? `; simultâneo ${pct(o.ext.simultaneo, 1, false)}` : ""} — NBR 14653-2, Tabela 1, item 4`);
+    if (it[5] < gD) { const ac = m.spec.map(([v], j) => [v, m.sig[j + 1]]).filter(([, s]) => s > nm.sig); imp.push(`Regressor acima do limite de significância do Grau ${ROM[gD]} (${br(nm.sig * 100, 0)}%) — ${ac.map(([v, s]) => `${v} ${br(s * 100)}%`).join("; ")} — NBR 14653-2, Tabela 1, item 5`); }
+    if (it[6] < gD) imp.push(`Significância do modelo acima do limite do Grau ${ROM[gD]} (${br(nm.F * 100, 0)}%) — F com ${br(m.sigF * 100, 4)}% — NBR 14653-2, Tabela 1, item 6`);
+    if (!o.micro.ok) o.micro.detalhes.filter(x => !x.ok).forEach(x => imp.push(`Micronumerosidade em ${x.variavel} — ${x.contagem.map(([a, b]) => `${br(a, 0)}→${b}`).join(", ")} (mínimo ${o.micro.minimo} por nível) — NBR 14653-2, micronumerosidade`));
+    o.coer.filter(x => x.classe === "impedimento").forEach(x => imp.push(`Sinal incoerente em ${x.variavel} — efeito ${pct(x.efeito)} no VU, esperado ${sinalTxt(x.esperado)} (${x.origem}); retirar a variável muda o VU em ${pct(x.impacto, 1, false)} (> 5%) — coerência do modelo (regra do Módulo: impacto > 5% é impedimento)`));
+    if (o.gp < 1) imp.push(`Precisão abaixo do Grau I — amplitude do IC 80% = ${pct(o.amp, 1, false)} (> 50%) — NBR 14653-2, Tabela 3`);
+    if (!Number.isFinite(o.erro)) imp.push(`Erro de previsão fora da amostra não calculável — o modelo não prevê algum dado deixado de fora — regra do Módulo`);
+  }
+  if (imp.length) imp.forEach((t, i) => p(`IMP-${i + 1} — ${t}`)); else p("nenhum");
+
+  /* 4 */
+  p(""); p("## 4. ACHADOS (fragilidades relevantes)");
+  const ach = [];
+  if (Object.keys(ck).length && !ok) ach.push(`Reprodução do modelo não confere com o arquivo — ${Object.entries(ck).map(([k2, v]) => `${k2}: ${v ? "confere" : "não confere"}`).join("; ")} — pedir ao autor o arquivo do modelo que gerou o laudo`);
+  A.achados.filter(a => a.cod === "comb").forEach(a => ach.push(`${a.txt[0].toUpperCase()}${a.txt.slice(1)} — ${/excluiu/.test(a.txt) ? "pedir ao autor a justificativa dessas exclusões" : "pedir ao autor que justifique o valor sem dados com essa combinação"}`));
+  A.achados.filter(a => a.cod === "reinc").forEach(a => ach.push(`${a.txt[0].toUpperCase()}${a.txt.slice(1)} — pedir ao autor a justificativa da exclusão`));
+  (o.omitidas || []).forEach(x => ach.push(`Variável relevante omitida: ${x.variavel} [${R.NOME_X[x.transf]}] entra com significância ${br(x.sig * 100)}%, sinal não incoerente, e muda o VU em ${pct(x.efeito)} — pedir ao autor por que ${x.variavel} ficou fora do modelo`));
+  o.coer.filter(x => x.classe === "a confirmar").forEach(x => ach.push(`Sinal A CONFIRMAR em ${x.variavel}: efeito ${pct(x.efeito)} no VU, contrário ao da ${x.origem}; retirar a variável muda o VU em ${pct(x.impacto, 1, false)} — confirmar no laudo o efeito esperado de ${x.variavel}; se o laudo disser o contrário do modelo, vira impedimento`));
+  o.coer.filter(x => x.classe === "fragilidade").forEach(x => ach.push(`Sinal incoerente em ${x.variavel} com impacto pequeno: efeito ${pct(x.efeito)} no VU (esperado ${sinalTxt(x.esperado)}, ${x.origem}); retirar muda o VU em ${pct(x.impacto, 1, false)} (≤ 5%) — pedir ao autor que explique o sinal`));
+  /* v1.30.0: auditoria com classificação e perfil do avaliando (vizinhos e alavancagem) */
+  const aud = E.aud || [], vz = E.viz, va0 = ctx.vu_adotado || o.vu, noLaudo = i => F.desab.includes(i) ? "excluído pelo autor" : "usado no laudo";
+  for (const a of aud.filter(x => x.classe !== "legitimo")) ach.push(`${a.classe === "erro" ? "Provável erro de digitação" : "Dado a verificar"} no ${dado(a.id)} (${noLaudo(a.id)}): ${a.txt} — ${R.AUD_DEC[a.classe]}`);
+  if (vz && vz.achado) {
+    const ex = vz.viz.filter(x => !x.usado);
+    ach.push(`O valor do laudo (R$ ${br(va0)}) fica ${va0 > vz.max ? "acima" : "abaixo"} de todos os ${vz.k} dados mais parecidos com o avaliando (VU de R$ ${br(vz.min)} a R$ ${br(vz.max)}; mediana R$ ${br(vz.mediana)})${ex.length ? `; ${ex.length === 1 ? "um deles foi excluído" : ex.length + " deles foram excluídos"} pelo autor (${dados(ex.map(x => x.id))})` : ""} — pedir ao autor que explique a diferença para os dados mais parecidos`);
+  }
+  if (vz && Number.isFinite(vz.h0) && vz.h0 > vz.hMax) ach.push(`O avaliando fica fora da nuvem dos dados do modelo do laudo: alavancagem ${br(vz.h0, 3)}, maior que a de qualquer dado usado (máxima ${br(vz.hMax, 3)}, ${dado(vz.hId)}) — pedir ao autor que comente a representatividade da amostra para o avaliando`);
+  if (ach.length) ach.forEach((t, i) => p(`ACH-${i + 1} — ${t}`)); else p("nenhum");
+  if (A.linhas && A.linhas.length > 1) {
+    p("");
+    p("Exclusões do autor (modelo do laudo reajustado, mesmas variáveis e transformações):");
+    const cols = [...new Set(A.combos.flatMap(c => c.vars))], lim = R.NORMA.grau[ctx.grau].sig;
+    p("| Dados usados | n | VU | Variação | R² | Fund. | " + cols.map(v => `Signif. ${v} | `).join("") + "Maior signif. |");
+    p("|---|---|---|---|---|---|" + "---|".repeat(cols.length) + "---|");
+    for (const l of A.linhas) {
+      if (!l.ok) { p(`| ${l.rotulo} | ${l.n} | modelo inviável | | | |` + " |".repeat(cols.length) + " |"); continue; }
+      const vmax = Object.keys(l.sig).reduce((a, b) => (l.sig[b] > l.sig[a] ? b : a));
+      p(`| ${l.rotulo} | ${l.n} | R$ ${br(l.vu)} | ${"var" in l ? pct(l.var) : "—"} | ${br(l.R2, 3)} | ${ROM[l.gf]} | ` + cols.map(v => `${br(l.sig[v] * 100)}%${l.sig[v] > lim ? " (acima)" : ""} | `).join("") + `${vmax} ${br(l.sig[vmax] * 100)}% |`);
+    }
+    A.leitura.forEach(t => p("Leitura: " + t));
+  }
+  if (aud.length) {
+    p(""); p("Auditoria dos dados (só informa; não muda a busca):");
+    p("| Dado | Situação | O que | Classe | Decisão proposta |"); p("|---|---|---|---|---|");
+    aud.forEach(a => p(`| ${R.idTxt(F, a.id)} | ${noLaudo(a.id)} | ${a.txt} | ${R.AUD[a.classe]} | ${R.AUD_DEC[a.classe]} |`));
+  }
+  if (vz) {
+    p(""); p(`Dados mais parecidos com o avaliando (distância nas variáveis do modelo do laudo, padronizadas: ${vz.vars.join(", ")}):`);
+    p("| Dado | Distância | VU observado | Situação |"); p("|---|---|---|---|");
+    vz.viz.forEach(x => p(`| ${R.idTxt(F, x.id)} | ${br(x.d)} | R$ ${br(x.vu)} | ${noLaudo(x.id)} |`));
+    p(`Os ${vz.k} ${vz.concordam ? "concordam entre si" : "não concordam entre si"} (coeficiente de variação do VU ${pct(vz.cv, 1, false)}; limite ${pct(R.VIZ.cv, 0, false)}); VU de R$ ${br(vz.min)} a R$ ${br(vz.max)}, mediana R$ ${br(vz.mediana)}. Valor do laudo R$ ${br(va0)}: ${va0 < vz.min ? "abaixo do intervalo" : va0 > vz.max ? "acima do intervalo" : "dentro do intervalo"} (${pct(va0 / vz.mediana - 1)} da mediana).`);
+    if (Number.isFinite(vz.h0)) p(`Alavancagem do avaliando no modelo do laudo: ${br(vz.h0, 3)} (maior entre os dados usados: ${br(vz.hMax, 3)}, ${dado(vz.hId)}).`);
+  }
+  if (A.erros && A.erros.length) {
+    const ok2 = A.erros.filter(x => Number.isFinite(x.erro)), rms = ok2.length ? Math.sqrt(ok2.reduce((s, x) => s + x.erro * x.erro, 0) / ok2.length) : NaN;
+    p(`Erro do modelo do laudo nos dados que o autor excluiu (estimado pela mediana ÷ observado − 1, em VU): ${A.erros.map(x => `${dado(x.id)} ${Number.isFinite(x.erro) ? pct(x.erro) : "não estimável"} (observado R$ ${br(x.obs)}, estimado R$ ${br(x.est)})`).join("; ")}` +
+      (ok2.length ? `; erro quadrático médio ${pct(rms, 1, false)}, contra ${pct(o.erro, 1, false)} de erro de previsão nos dados usados` : ""));
+  }
+
+  /* 5 */
+  p(""); p("## 5. DIAGNÓSTICO");
+  if (m) {
+    p(`R² ajustado em VU = ${br(o.r2a_vu, 4)}; erro de previsão fora da amostra (deixa-um-fora, em VU, estimativas pela mediana) = ${pct(o.erro, 1, false)}`);
+    p(`Normalidade: Shapiro-Wilk p = ${br(o.shapiro, 3)}; resíduos em ±1 / ±1,64 / ±1,96σ: ${o.pct.map(x => R.fixPy(x * 100, 0) + "%").join(" / ")} (curva normal: 68% / 90% / 95%)`);
+    p(`Homocedasticidade: Breusch-Pagan p = ${br(o.bp, 3)} (${o.bp >= 0.05 ? "sem indício de heterocedasticidade" : "indício de heterocedasticidade"})`);
+    p(`Autocorrelação espacial: ${o.moran ? `I de Moran dos resíduos = ${br(o.moran.I, 3)} (esperado ${br(o.moran.esperado, 3)}; p = ${br(o.moran.p, 3)}; ${o.moran.p < 0.05 ? "indício de dependência espacial" : "sem indício"})` : "sem coordenadas no arquivo (não calculada; a ordem das linhas não tem significado)"}`);
+    const vf = R.vif(m); let par = "";
+    if (m.k > 1) { const C = R.corrMat(m); let bi = 0, bj = 1, bv = 0; for (let i = 0; i < m.k; i++) for (let j = i + 1; j < m.k; j++) if (Math.abs(C[i][j]) > Math.abs(bv)) { bv = C[i][j]; bi = i; bj = j; } par = `; maior correlação entre independentes: ${m.spec[bi][0]} × ${m.spec[bj][0]} = ${br(bv)}`; }
+    p(`Multicolinearidade: VIF ${m.spec.map(([v], j) => `${v} ${br(vf[j])}`).join(", ")}${par}`);
+    const out2 = m.idx.map((r, i) => [r, m.rp[i]]).filter(([, r]) => Math.abs(r) > 2);
+    p(`Resíduos padronizados fora de ±2: ${out2.length ? out2.map(([r, v]) => `${dado(r)} (${br(v)})`).join(", ") : "nenhum"}`);
+    const ord = m.idx.map((r, i) => [r, m.cook[i]]).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    p(`Maiores distâncias de Cook: ${ord.map(([r, c]) => `${dado(r)} (${br(c)})`).join(", ")} (referência: > 1 é influente)`);
+    p(`Efeito no VU (+10% quantitativa, +1 nível código, 0→1 dicotômica): ${o.coer.map(x => `${x.variavel} ${pct(x.efeito)} (${x.coerente === true ? "coerente" : x.coerente === null ? "sem expectativa" : `INCOERENTE; retirar muda o VU em ${pct(x.impacto, 1, false)} → ${String(x.classe).toUpperCase()}`})`).join("; ")}`);
+  }
+
+  /* 6 */
+  p(""); p("## 6. MODELO ALTERNATIVO");
+  const fmtCrit = (nome, c) => {
+    if (nome.startsWith("Grau de fund")) return `${ROM[c.gf]} (item 2: ${ROM[c.itens[2]]}; 4: ${ROM[c.itens[4]]}; 5: ${ROM[c.itens[5]]}; 6: ${ROM[c.itens[6]]})`;
+    if (nome.startsWith("Sinais")) { const inc = c.coer.filter(x => x.coerente === false); return inc.length ? inc.map(x => `${x.variavel} incoerente (impacto ${pct(x.impacto, 1, false)}: ${x.classe})`).join("; ") : "todos coerentes ou sem expectativa"; }
+    if (nome.startsWith("Variável relevante")) return (c.omitidas || []).map(x => `${x.variavel} (${pct(x.efeito)} no VU, signif. ${br(x.sig * 100)}%)`).join("; ") || "nenhuma";
+    if (nome.startsWith("Erro")) return pct(c.erro, 1, false);
+    if (nome.startsWith("Grau de prec")) return `${ROM[c.gp]} (amplitude ${pct(c.amp, 1, false)})`;
+    if (nome.startsWith("Dados excl")) return `${c.excl.length}` + (c.excl.length ? ` (${dados(c.excl)})` : "");
+    if (nome.startsWith("Resíduos")) return `${c.nout}` + (c.outliers.length ? ` (${dados(c.outliers)})` : "");
+    if (nome.startsWith("Normal")) return `p = ${br(c.shapiro, 3)}`;
+    if (nome.startsWith("Homoc")) return `p = ${br(c.bp, 3)}`;
+    return "";
+  };
+  const ops = E.opcoes || [];
+  const pctl = (lista, x) => { const n = lista.length; return n ? (lista.filter(v => v < x).length / n * 100 + lista.filter(v => v === x).length / n * 50) : NaN; };
+  const quant = (a, q) => { const s = [...a].sort((x, y) => x - y), h = (s.length - 1) * q / 100, lo = Math.floor(h); return s[lo] + (s[Math.min(lo + 1, s.length - 1)] - s[lo]) * (h - lo); };
+  const minusc = t => t[0].toLowerCase() + t.slice(1), nomesL = Ls => Ls.map(minusc).join(", ");
+  const va = ctx.vu_adotado || o.vu;
+  if (!ops.length) p(`Classe: NENHUM MELHOR. Não foi encontrado modelo alternativo válido para o Grau ${ROM[ctx.grau]} com as variáveis e os dados disponíveis.`);
+  else {
+    const c = ops[0], cp = c.comparacao, sug = cp.classe === "domina" || cp.melhor_pela_ordem;
+    if (cp.classe === "domina") p(`Classe: DOMINA — o alternativo é igual ou melhor que o modelo do laudo em todos os critérios e superior em: ${nomesL(cp.melhor)}.`);
+    else if (cp.classe === "troca") p(`Classe: TROCA — o alternativo é melhor em ${nomesL(cp.melhor)}, ao custo de ${nomesL(cp.pior)}. Pela ordem de desempate, ${cp.decidido_por ? (cp.melhor_pela_ordem ? "vence o ALTERNATIVO" : "vence o LAUDO") + ` (primeiro critério em que diferem: ${minusc(cp.decidido_por)})` : "há empate (as diferenças estão só em resíduos, normalidade ou homocedasticidade)"}.`);
+    else if (cp.classe === "equivalente") p(`Classe: EQUIVALENTE — empate em todos os critérios: o modelo do laudo se sustenta` + (cp.decidido_por ? `; pela ordem de desempate o alternativo é ${cp.melhor_pela_ordem ? "melhor" : "pior"} (${minusc(cp.decidido_por)}).` : "."));
+    else p(`Classe: NENHUM MELHOR — o melhor modelo encontrado não supera o do laudo em nenhum critério (é pior em ${nomesL(cp.pior)}). Não apresentar como sugestão.`);
+    if (!ops.some(x => x.comparacao.classe === "domina" || x.comparacao.melhor_pela_ordem)) {
+      const achExcl = A.achados.some(a => a.cod === "comb" || a.cod === "reinc");
+      p("Nenhum modelo encontrado é melhor que o do laudo pela ordem de desempate" + (achExcl ? ", mas veja na seção 4 os achados sobre as exclusões do autor." : ": o modelo do laudo se sustenta.") + " O modelo abaixo é só informativo.");
+    }
+    const errEx = (A.erros || []).filter(x => Number.isFinite(x.erro));
+    if (errEx.length && !sug) p(`Informação: o erro de previsão do laudo (${pct(o.erro, 1, false)}) é medido sem os ${F.desab.length} dado(s) que o autor excluiu; nesses dados o modelo do laudo erra ${pct(Math.sqrt(errEx.reduce((s2, x) => s2 + x.erro * x.erro, 0) / errEx.length), 1, false)} (erro quadrático médio).`);
+    else if (sug) p("O alternativo é sugestão de melhoria; quem decide é o revisor.");
+    if (o.falhas.length) p(`Atenção: o modelo do laudo não passa nos filtros que o alternativo atende (${o.falhas.join("; ")}).`);
+    p("");
+    p("| Critério | Laudo | Alternativo | Melhor |"); p("|---|---|---|---|");
+    for (const l of cp.linhas) p(`| ${l.criterio} | ${fmtCrit(l.criterio, o)} | ${fmtCrit(l.criterio, c)} | ${{ 1: "alternativo", "-1": "laudo", 0: "empate" }[l.res]} |`);
+    if (!cp.linhas.some(l => l.criterio === "Dados excluídos")) p(`| Dados excluídos (informativo) | ${fmtCrit("Dados excluídos", o)} | ${fmtCrit("Dados excluídos", c)} | — |`);
+    const efTxt = c2 => { const ef = R.errosFora(F, ctx, c2); return !c2.excl.length ? "nenhum dado fora" : ef.n ? `${pct(ef.rms, 1, false)} (${ef.n} dado${ef.n > 1 ? "s" : ""})` : "não estimável"; };
+    p(`| Erro nos dados que o modelo deixou de fora (informativo) | ${efTxt(o)} | ${efTxt(c)} | — |`);
+    p(`| R² ajustado em VU (informativo) | ${br(o.r2a_vu, 4)} | ${br(c.r2a_vu, 4)} | — |`);
+    p(`| Variável dependente (informativo) | ${o.y} (${R.NOME_Y[o.ytr]}) | ${c.y} (${R.NOME_Y[c.ytr]}) | — |`);
+    p(`| Nº de variáveis (desempate) | ${o.k} | ${c.k} | — |`);
+    p(`| Valor unitário do avaliando | R$ ${br(o.vu)} | R$ ${br(c.vu)} | — |`);
+    if (cp.classe !== "pior") {
+      const dd = R.semExcl(F, c.excl), mc = R.ajustar(F, dd, c.spec, c.y, c.ytr), vr = E.versoes.find(v => v.rotulo === c.versao);
+      p("");
+      p(`Modelo: ${c.y} (${R.NOME_Y[c.ytr]}); dados: ${c.n} de ${F.N} (versão: ${c.versao})`);
+      p(`Variáveis: ${c.spec.map(([v, t]) => `${v} (${R.NOME_X[t]})${ctx.tipos[v] === "cod" ? " [código alocado]" : ""}`).join(", ")}`);
+      if (mc) {
+        p(`Equação: ${eq(mc.spec, mc.b, c.y, c.ytr)}`);
+        p(`R² = ${br(mc.R2, 4)}; R² ajustado = ${br(mc.R2a, 4)} (em VU: ${br(c.r2a_vu, 4)}); F = ${br(mc.F)} (significância ${br(mc.sigF * 100, 4)}%)`);
+        p(`Coeficientes: ${["constante", ...mc.spec.map(s => s[0])].map((v, j) => `${v} [${j ? R.NOME_X[mc.spec[j - 1][1]] : "-"}] ${raG6(mc.b[j])} (t = ${br(mc.t[j])}; signif. ${br(mc.sig[j] * 100)}%)`).join("; ")}`);
+      }
+      p(`Extrapolação: ${c.ext.fora.length ? c.ext.fora.map(f => `${f.variavel} ${br(f.x)} fora de [${br(f.lo)}; ${br(f.hi)}], efeito ${pct(f.efeito, 1, false)}`).join("; ") : "nenhuma"}`);
+      if (c.micro.detalhes.length) p(`Micronumerosidade (mínimo ${c.micro.minimo} por nível): ${c.micro.detalhes.map(x => `${x.variavel}: ${x.contagem.map(([a, b]) => `${br(a, 0)}→${b}`).join(", ")}`).join("; ")}`);
+      p(`Pressupostos: Shapiro-Wilk p = ${br(c.shapiro, 3)}; Breusch-Pagan p = ${br(c.bp, 3)}; ${c.moran ? `I de Moran = ${br(c.moran.I, 3)} (p = ${br(c.moran.p, 3)}); ` : ""}Cook máx. = ${br(c.cook_max)} (${dado(c.cook_id)}); VIF máx. = ${br(c.vif_max)}`);
+      p(`Efeito no VU: ${c.coer.map(x => `${x.variavel} ${pct(x.efeito)} (${x.coerente === true ? "coerente" : x.coerente === null ? "sem expectativa" : "INCOERENTE"})`).join("; ")}`);
+      p("Dados excluídos no alternativo:");
+      if (!c.excl.length) p("nenhum");
+      for (const i of c.excl) {
+        const ms = E.motivos.get(i) || [], pr = ms.filter(x => !x.info).map(x => x.txt), inf = ms.filter(x => x.info).map(x => x.txt);
+        p(`${dado(i)}: ${(pr.length ? pr : ["sem motivo estatístico calculado (mesma exclusão do laudo)"]).join("; ")}${inf.length ? ` [${inf.join("; ")}]` : ""}`);
+      }
+      const reinc = F.desab.filter(i => !c.excl.includes(i)); if (reinc.length) p(`Reincluídos (excluídos pelo autor e usados no alternativo): ${dados(reinc)}`);
+      const vuCom = ex => { const mm = R.ajustar(F, R.semExcl(F, ex), c.spec, c.y, c.ytr); return mm ? R.tenta(() => R.vuDe(ctx, mm, ctx.av)) : NaN; };
+      const vAll = vuCom([]), vL = vuCom(F.desab);
+      p(`VU do alternativo: com as exclusões dele R$ ${br(c.vu)}; com todos os dados R$ ${br(vAll)}${Number.isFinite(vAll) ? ` (${pct(vAll / c.vu - 1)})` : ""}; com as exclusões do laudo R$ ${br(vL)}${Number.isFinite(vL) ? ` (${pct(vL / c.vu - 1)})` : ""}`);
+      p(`Diferença para o laudo: VU laudo R$ ${br(va)} × alternativo R$ ${br(c.vu)} → ${pct(c.vu / va - 1)}` + (base && ab ? `; valor total (${base} = ${br(ab)}): laudo R$ ${br(va * ab)} × alternativo R$ ${br(c.vu * ab)}` : ""));
+      p(`Alternativo: IC 80% R$ ${br(c.ic_vu[0])} a R$ ${br(c.ic_vu[1])}; campo de arbítrio (±15%) R$ ${br(c.vu * 0.85)} a R$ ${br(c.vu * 1.15)}${base ? " (valores unitários)" : ""}. O valor do laudo ${c.vu * 0.85 <= va && va <= c.vu * 1.15 ? "ESTÁ" : "NÃO está"} no campo de arbítrio do alternativo.`);
+      if (c.spec.some(([v]) => v.includes("÷"))) p("Observação: o modelo usa variável derivada; para reproduzir no SisDEA, crie a coluna na amostra e no avaliando.");
+      if (F.vtCalc && c.y === ctx.vt) p(`Observação: a coluna de valor total não existe no arquivo; foi calculada como ${F.dep} × ${base}.`);
+    }
+  }
+  const dist = E.dist || [];
+  if (dist.length >= 5) {
+    p(`Faixa dos modelos válidos (combinação de variáveis × versão dos dados${R.REGRAS.laudo_disputa ? "" : ", sem a versão do autor"}): ${dist.length} modelos; VU P10 R$ ${br(quant(dist, 10))}; mediana R$ ${br(quant(dist, 50))}; P90 R$ ${br(quant(dist, 90))}.`);
+    p(`Posição: laudo (R$ ${br(va)}) no percentil ${R.fixPy(pctl(dist, va), 0)}${ops.length ? `; alternativo (R$ ${br(ops[0].vu)}) no percentil ${R.fixPy(pctl(dist, ops[0].vu), 0)}` : ""}. A faixa não passa pelo teste de variável omitida (feito só nas opções).`);
+  } else p(`Só ${dist.length} modelo(s) válido(s) distinto(s): faixa não calculada.`);
+  /* v1.31.0: estabilidade */
+  if (E.estab && E.estab.some(x => x.r)) {
+    p(""); p(`Estabilidade (só informa): VU refeito sem cada dado usado e em ${R.ESTAB.reamostras} reamostragens dos dados usados (com reposição, semente fixa ${R.ESTAB.semente}); mesmas variáveis e transformações.`);
+    p("| Modelo | VU | Sem cada dado (mín. a máx.) | Dados que mais mudam o VU | Reamostragem P10 a P90 | (P90 − P10) ÷ mediana | Falhas |"); p("|---|---|---|---|---|---|---|");
+    for (const { rot, r } of E.estab) {
+      if (!r) { p(`| ${rot} | não calculado | | | | | |`); continue; }
+      p(`| ${rot} | R$ ${br(r.vu)} | R$ ${br(r.semMin)} a R$ ${br(r.semMax)} | ${r.maiores.map(x => `${R.idTxt(F, x.id)} (${pct(x.var)})`).join(", ")} | R$ ${br(r.p10)} a R$ ${br(r.p90)} | ${pct(r.amp, 1, false)} | ${r.falhas} de ${r.n} |`);
+    }
+  }
+  if (E.ref) {
+    const r = E.ref, cr = r.comparacao;
+    p(`Referência (não disputa a escolha): melhor modelo com as exclusões do autor (${dados(F.desab)}): ${r.y} (${R.NOME_Y[r.ytr]}); ${r.spec.map(([v, t]) => `${v} (${R.NOME_X[t]})`).join(", ")}; frente ao laudo: ${cr.classe.toUpperCase()}${cr.classe !== "domina" && cr.melhor_pela_ordem ? " (melhor pela ordem)" : ""}; erro ${pct(r.erro, 1, false)}; VU R$ ${br(r.vu)} (${pct(r.vu / va - 1)}).`);
+  }
+  if (ops.length > 1) {
+    p("Outras opções:");
+    ops.slice(1).forEach((x, j) => { const cx = x.comparacao; p(`opção ${j + 2}: ${cx.classe.toUpperCase()}${cx.classe !== "domina" && cx.melhor_pela_ordem ? " (melhor pela ordem)" : ""}; ${x.y} (${R.NOME_Y[x.ytr]}); ${x.spec.map(([v, t]) => `${v} (${R.NOME_X[t]})`).join(", ")}; excluídos ${x.excl.length}; erro ${pct(x.erro, 1, false)}; fund. ${ROM[x.gf]}; prec. ${ROM[x.gp]}; VU R$ ${br(x.vu)}`); });
+  }
+
+  /* 7 */
+  p(""); p("## 7. DIÁRIO DAS DECISÕES");
+  const dia = (passo, enc, dec, pq) => p(`${passo} — ${enc} — ${dec} — ${pq}`);
+  const ckTxt = Object.keys(ck).length ? Object.entries(ck).map(([k2, v]) => `${k2} ${v ? "confere" : "não confere"}`).join(", ") : "sem R² nem valor no arquivo";
+  dia("Reproduzir", ckTxt, ok || !Object.keys(ck).length ? "seguir" : "seguir por decisão do revisor", "a conferência é pelo R² e pelo valor do avaliando, não pelos coeficientes arredondados");
+  dia("Grau declarado", ROM[ctx.grau], "adotado", resp.grauOrigem || "informado pelo revisor (o arquivo não traz o grau)");
+  dia("Critério", critNome[ctx.crit], "adotado", ctx.origem_crit);
+  dia("Variável base", base || "não identificada", base ? "adotada" : F.nAreas > 1 ? "áreas sem sinal esperado; sem modelos por valor total" : "sem modelos por valor total", base ? F.origemBase : F.nAreas > 1 ? "o revisor não indicou a base" : "uma área só ou nenhuma, sem coluna de valor total");
+  const orgs = {}; Object.values(ctx.sinais).forEach(([, org]) => { orgs[org] = (orgs[org] || 0) + 1; });
+  dia("Sinais esperados", Object.entries(orgs).map(([k2, v]) => `${v} ${k2}`).join("; "), "adotados", "premissas padrão da passagem; sinal da tabela padrão com impacto > 5% vira A CONFIRMAR");
+  const nCl = c => aud.filter(a => a.classe === c).length;
+  dia("Auditoria dos dados", aud.length ? `${nCl("erro")} provável erro de digitação; ${nCl("verificar")} a verificar; ${nCl("legitimo")} legítimo mas extremo` : "nada de anormal", E.inconsist.size ? "inconsistências entram como exclusão direta na busca; a classificação só informa" : "a classificação só informa; nada muda na busca", "erro: VU inválido, VT ÷ base ≠ VU, área nula, ou valor 10× maior ou menor que a mediana num dado que os melhores modelos não explicam; verificar: duplicado ou só uma das duas condições; legítimo: o resto");
+  const comb = A.combos || [], vzAch = vz && vz.achado, hAch = vz && vz.h0 > vz.hMax;
+  dia("Perfil do avaliando", [comb.length ? comb.map(c2 => c2.vars.join(" + ")).join("; ") + " sem dado usado" : "combinação de dicotômicas presente nos dados usados", vz ? `${vz.k} vizinhos ${vz.concordam ? "concordam" : "não concordam"} (CV ${pct(vz.cv, 1, false)}); laudo ${va0 < vz.min ? "abaixo" : va0 > vz.max ? "acima" : "dentro"} do intervalo deles; alavancagem ${br(vz.h0, 3)} × máxima ${br(vz.hMax, 3)}` : ""].filter(Boolean).join("; "),
+    comb.length || vzAch || hAch ? "achado" : "nada a apontar", "achado se: combinação sem dado usado; laudo fora do intervalo dos 5 mais parecidos e a mais de 15% da mediana deles; alavancagem do avaliando acima da maior da amostra");
+  const rein = (A.linhas || []).slice(1).filter(l => l.ok && Math.abs(l.var) > R.REGRAS.sens_exclusao && l.rotulo !== "todos os dados");
+  dia("Exclusões do autor", F.desab.length ? `${F.desab.length} dado(s); reinclusão acima de 10%: ${rein.map(l => `${l.rotulo.replace("reincluindo ", "")} (${pct(l.var)})`).join(", ") || "nenhuma"}` : "nenhuma", rein.length ? "achado" : "nada a apontar", "reinclusão muda o VU em mais de 10%");
+  const h1 = E.hist.filter(h => h.rodada === 1), hc = E.hist.filter(h => h.rodada > 1);
+  dia("Modelo com tudo", h1.length || hc.length ? `${h1.map(h => `${dado(h.id)} (${h.tipo})`).join(", ") || "nada na 1ª rodada"}${hc.length ? `; em cascata: ${hc.map(h => `${dado(h.id)} (rodada ${h.rodada})`).join(", ")}` : ""}` : "nenhum dado com resíduo persistente ou influência", h1.length || hc.length ? "excluir só com o motivo calculado; a cascata é testada à parte" : "manter todos", "resíduo médio ≥ 2,5 (ou ≥ 2 em 60% dos 40 melhores) ou Cook > 1 em metade deles");
+  dia("Versões de dados", E.versoes.map(v => `${v.rotulo} (${F.N - v.excl.length} dados)${v.ref ? " [referência]" : ""}`).join("; "), "testadas", R.REGRAS.laudo_disputa ? "todas disputam; exclusões não são critério de escolha (decisão de 14/10/2026)" : "a versão com as exclusões do autor não disputa a escolha");
+  const fl = Object.entries(E.estat.falhas).sort((a, b) => b[1] - a[1]).map(([k2, v]) => `${k2}: ${v}`).join("; ");
+  dia("Busca", `${E.estat.ajustes} ajustes rápidos; ${E.estat.avaliados} modelos avaliados; ${E.candidatos.length} válidos${fl ? ` (reprovados: ${fl})` : ""}${E.limitacoes.length ? `; limitações: ${[...new Set(E.limitacoes)].join("; ")}` : ""}`, "comparar todos em VU", "mesmos filtros para o laudo e para os alternativos");
+  const eL = E.estab && E.estab[0] && E.estab[0].r, eA = E.estab && E.estab[1] && E.estab[1].r;
+  if (eL) dia("Estabilidade", `laudo: sem cada dado R$ ${br(eL.semMin)} a R$ ${br(eL.semMax)}; reamostragem P10–P90 ${pct(eL.amp, 1, false)} da mediana` + (eA ? `; opção 1: P10–P90 ${pct(eA.amp, 1, false)}` : ""), "informar", `${R.ESTAB.reamostras} reamostragens com semente fixa; não entra nos critérios de escolha`);
+  if (ops.length) { const cp = ops[0].comparacao; dia("Escolha", `${cp.classe.toUpperCase()}${cp.decidido_por ? `; primeiro critério em que diferem: ${minusc(cp.decidido_por)}` : ""}`, cp.classe === "domina" || cp.melhor_pela_ordem ? "sugerir o alternativo" : "manter o modelo do laudo", `dominância e, sem ela, a ordem de desempate (fundamentação, sinais, variável omitida, erro de previsão, precisão, ${R.REGRAS.excl_criterio ? "exclusões, " : ""}nº de variáveis)`); }
+  else dia("Escolha", "nenhum alternativo válido", "manter o modelo do laudo", "nenhum modelo passa nos filtros");
+  (resp.diario || []).forEach(t => p(t));
+  return L.join("\n") + "\n";
+}
+
+/* ---------- entrada: o modelo como chegou no arquivo (S.lido), sem as edições feitas depois ---------- */
+const RA_ARQ = {};   // critério e valor adotados lidos do relatório do SisDEA (aba Modelo, A27/A28), por arquivo
+const lerSisdeaXls1290 = lerSisdeaXls;
+lerSisdeaXls = function (abas, arquivo) {
+  const R = lerSisdeaXls1290(abas, arquivo);
+  try {
+    const M = (abas.find(a => normX(a.nome) === "modelo") || { linhas: [] }).linhas;
+    let crit = null, vr = NaN;
+    for (const l of M) {
+      if (!l || typeof l[0] !== "string") continue;
+      const rot = normX(l[0]);
+      if (rot.startsWith("criterio adotado")) { const t = normX(l[1]); crit = /mediana/.test(t) ? "mediana" : /moda/.test(t) ? "moda" : /media/.test(t) ? "media" : null; }
+      if (rot.startsWith("vr. medio adotado")) vr = numX(l[1]);
+    }
+    RA_ARQ[arquivo] = { critAdot: crit, vrAdot: vr };
+  } catch (e) { console.warn(e); }
+  return R;
+};
+function raEntrada() {
+  if (!S.dados || !S.lido || !S.lido.dep) return null;
+  const orig = S.dados.linhas.filter(l => !l.novo), ativos = S.lido.ativos || [], dep = S.lido.dep;
+  const cols = S.lido.vars.filter(v => v.col !== dep.col && S.dados.cols.includes(v.col)).map(v => ({ nome: v.col, tipo: v.tipo, inc: !!v.inc, tr: v.tr, sinal: v.sinal || 0 }));
+  const R = S.refArquivo || {}, ex = (S.externo && RA_ARQ[S.externo.arquivo]) || {};
+  return { arquivo: (S.externo && S.externo.arquivo) || S.origem || "modelo", programa: (S.externo && S.externo.programa) || "", cols, dep: { nome: dep.col, tr: dep.tr },
+    linhas: orig.map((l, i) => ({ id: l.id, ativo: i < ativos.length ? !!ativos[i] : false, v: l.v0 || l.v })), aval: { ...S.lido.aval },
+    ref: { R2: R.R2, central: R.central, crit: R.crit, critAdot: ex.critAdot || null, vrAdot: ex.vrAdot }, descs: (S.externo && S.externo.descs) || {} };
+}
+
+/* ---------- estado, utilidade e abas ---------- */
+S.ra = { resp: {}, E: null, txt: "", rodando: false, prog: "", erro: "", baixado: false };
+S.ultAba.revauto = "ra";
+ABAS.push(["ra", "Revisão automática"]);
+UTILS.push(["revauto", "Revisão automática"]);
+UTIL_ABAS.revauto = ["ra"];
+const raZerar = (resp = {}) => { S.ra = { resp, E: null, txt: "", rodando: false, prog: "", erro: "", baixado: false }; };
+const entrarNoModelo1290 = entrarNoModelo;
+entrarNoModelo = function (conferir, catArq) { raZerar(); return entrarNoModelo1290(conferir, catArq); };
+const estadoProjeto1290 = estadoProjeto;
+estadoProjeto = function (comHist) { const P = estadoProjeto1290(comHist); if (P && P.estado) P.estado.raResp = S.ra.resp; return P; };
+const restaurarProjeto1290 = restaurarProjeto;
+restaurarProjeto = function (P, rotulo) { raZerar((P && P.estado && P.estado.raResp) || {}); return restaurarProjeto1290(P, rotulo); };
+
+/* ---------- perguntas (só quando um palpite errado muda a conclusão) ---------- */
+const RA_CRIT = [["moda", "Moda"], ["mediana", "Mediana"], ["media", "Média"]];
+async function raPerguntaInicial(F, falta) {
+  const areas = F.nomes.filter(n => F.tipos[n] !== "dep" && RA.ehArea(n, F.tipos[n]));
+  const blocos = [];
+  if (falta.grau) blocos.push(`<fieldset class="ra-q"><legend>Grau de fundamentação declarado no laudo</legend><p class="small muted">O arquivo do modelo não traz o grau. Os mesmos filtros valem para o modelo do laudo e para os alternativos.</p>
+    <div class="ra-op">${[1, 2, 3].map(g => `<label><input type="radio" name="ra-grau" value="${g}" ${S.ra.resp.grau === g ? "checked" : ""}> Grau ${["", "I", "II", "III"][g]}</label>`).join("")}</div></fieldset>`);
+  if (falta.crit) blocos.push(`<fieldset class="ra-q"><legend>Critério da estimativa adotado no laudo</legend><p class="small muted">A dependente está em ln(y) e o arquivo não diz se o valor é pela moda, mediana ou média (nem o valor gravado permite deduzir).</p>
+    <div class="ra-op">${RA_CRIT.map(([k, t]) => `<label><input type="radio" name="ra-crit" value="${k}"> ${t}</label>`).join("")}</div></fieldset>`);
+  if (falta.base) blocos.push(`<fieldset class="ra-q"><legend>Variável base (a área que multiplica o valor unitário)</legend><p class="small muted">Há ${areas.length} áreas e nenhuma coluna de valor total para deduzir qual é a base. Sem a base, as áreas ficam sem sinal esperado e não há modelos por valor total.</p>
+    <div class="ra-op">${areas.map(a => `<label><input type="radio" name="ra-base" value="${esc(a)}"> ${esc(a)}</label>`).join("")}<label><input type="radio" name="ra-base" value=""> Nenhuma / não sei</label></div></fieldset>`);
+  return ui.modal("Revisão automática: antes de começar", blocos.join(""), [
+    { txt: "Cancelar", valor: null },
+    { txt: "Seguir", cls: "btn-primary", antes: bg => { const ok = (!falta.grau || $('input[name="ra-grau"]:checked', bg)) && (!falta.crit || $('input[name="ra-crit"]:checked', bg)) && (!falta.base || $('input[name="ra-base"]:checked', bg)); if (!ok) ui.toast("Responda todas as perguntas para seguir.", "e"); return !!ok; },
+      valor: bg => { const o = {}; const g = $('input[name="ra-grau"]:checked', bg), c = $('input[name="ra-crit"]:checked', bg), b = $('input[name="ra-base"]:checked', bg); if (g) o.grau = +g.value; if (c) o.crit = c.value; if (b) o.base = b.value; return o; } }
+  ], true);
+}
+async function raPerguntaRepro(F, ctx, rep) {
+  const br = RA.br, m = rep.m, e = RA.tenta(() => RA.prever(m, F.av, ctx.crit).est);
+  const linhas = [];
+  if ("R²" in rep.checks) linhas.push(`<li>R²: arquivo ${br(F.r2, 4)} × refeito ${br(m.R2, 4)} ${rep.checks["R²"] ? "(confere)" : "<b>(não confere)</b>"}</li>`);
+  if ("valor do avaliando" in rep.checks) linhas.push(`<li>Valor do avaliando (${esc(ctx.crit)}): arquivo R$ ${br(rep.alvo)} × refeito R$ ${br(e)} ${rep.checks["valor do avaliando"] ? "(confere)" : "<b>(não confere)</b>"}</li>`);
+  return ui.modal("A reprodução do modelo não confere", `<p>O Módulo refez o modelo com os dados habilitados do arquivo e o resultado não bate com o que o arquivo gravou:</p><ul>${linhas.join("")}</ul>
+    <p class="small muted">Pode ser dado alterado depois do cálculo, transformação diferente ou arquivo de outra revisão. Se seguir, o relatório registra a diferença como achado.</p>`, [
+    { txt: "Parar", valor: null }, { txt: "Seguir mesmo assim", cls: "btn-primary", valor: true }]);
+}
+async function raPerguntaSinais(pend) {
+  const br = RA.br, pct = RA.pct;
+  const corpo = `<p>Estas variáveis do modelo do laudo não têm sinal esperado conhecido e pesam no valor: retirar cada uma muda o VU em mais de 5%. O sinal esperado decide entre <b>impedimento</b> (contrário ao modelo) e nada a apontar.</p>
+    ${pend.map((x, i) => `<fieldset class="ra-q"><legend>${esc(x.variavel)}</legend><p class="small muted">No modelo, ${x.tipo === "dic" ? "passar de 0 para 1" : x.tipo === "cod" ? "subir um nível" : "aumentar 10%"} muda o VU em ${pct(x.efeito)}; retirar a variável muda o VU em ${pct(x.impacto, 1, false)}.</p>
+      <div class="ra-op"><label><input type="radio" name="ra-s${i}" value="1"> Aumenta o valor unitário</label><label><input type="radio" name="ra-s${i}" value="-1"> Diminui o valor unitário</label><label><input type="radio" name="ra-s${i}" value="0"> Sem expectativa</label></div></fieldset>`).join("")}`;
+  return ui.modal("Revisão automática: sinal esperado", corpo, [
+    { txt: "Cancelar", valor: null },
+    { txt: "Seguir", cls: "btn-primary", antes: bg => { const ok = pend.every((_, i) => $(`input[name="ra-s${i}"]:checked`, bg)); if (!ok) ui.toast("Escolha o efeito esperado de cada variável.", "e"); return ok; },
+      valor: bg => Object.fromEntries(pend.map((x, i) => [x.variavel, +$(`input[name="ra-s${i}"]:checked`, bg).value])) }
+  ], true);
+}
+
+/* ---------- execução ---------- */
+const raEspera = () => new Promise(r => setTimeout(r, 0));
+function raProg(t) { S.ra.prog = t; const el = $("#ra-prog-t"); if (el) el.textContent = t; }
+async function raRodar() {
+  if (S.ra.rodando) return;
+  const Mx = raEntrada();
+  if (!Mx) return ui.toast("Abra um modelo para rodar a revisão automática.", "e");
+  const resp = S.ra.resp;
+  S.ra.erro = "";
+  try {
+    let F = RA.lerFicha(Mx, resp.base || null);
+    const falta = { grau: !resp.grau, crit: !resp.crit && !RA.deduzirCriterio(F), base: !F.base && F.nAreas > 1 && resp.base === undefined };
+    if (falta.grau || falta.crit || falta.base) { const r = await raPerguntaInicial(F, falta); if (!r) return; Object.assign(resp, r); F = RA.lerFicha(Mx, resp.base || null); }
+    let ctx = RA.contexto(F, resp);
+    const rep = RA.reproduzir(F, ctx);
+    if (!rep.m) throw new Error("O modelo do arquivo não pôde ser ajustado com os dados habilitados (colinearidade ou dados insuficientes).");
+    if (Object.keys(rep.checks).length && !Object.values(rep.checks).every(Boolean) && !resp.reproOk) { if (!(await raPerguntaRepro(F, ctx, rep))) return; resp.reproOk = true; }
+    const pend = RA.sinaisPendentes(F, ctx);
+    if (pend.length) { const r = await raPerguntaSinais(pend); if (!r) return; resp.sinais = { ...(resp.sinais || {}), ...r }; F = RA.lerFicha(Mx, resp.base || null); ctx = RA.contexto(F, resp); }
+    S.ra.rodando = true; S.ra.prog = "Preparando: auditoria dos dados, exclusões do autor e modelo com tudo…"; S.ra.E = null; S.ra.txt = ""; desenhar(false);
+    await raEspera();
+    const t0 = performance.now();
+    const E = RA.preparar(F, ctx, RA.reproduzir(F, ctx)); E.resp = resp;
+    await RA.rodar(E, (i, n, fase) => raProg(fase === "estabilidade" ? "Estabilidade: sem cada dado e 1.000 reamostragens…" : fase ? "Comparando com o modelo do laudo…" : `Busca de modelos: etapa ${i} de ${n}`));
+    E.tempoTotal = (performance.now() - t0) / 1000;
+    S.ra.E = E; S.ra.txt = raRelatorio(E, { versao: INF_VERSAO, data: new Date().toLocaleDateString("pt-BR") });
+  } catch (e) { console.error(e); S.ra.erro = e.message || String(e); }
+  finally { S.ra.rodando = false; }
+  if (utilDe(S.aba) === "revauto") { const y = window.scrollY; desenhar(false); window.scrollTo(0, y); }
+  if (S.ra.txt && !S.ra.baixado) { S.ra.baixado = true; raBaixar(); }
+  if (S.ra.txt) ui.toast("Revisão automática concluída. Relatório gravado.");
+}
+function raNomeArq() { const a = ((S.ra.E && S.ra.E.F.arquivo) || "modelo").replace(/\.[^.]+$/, "").replace(/[^\wÀ-ÿ.-]+/g, "_"); return `Relatorio_Modulo_${a}.txt`; }
+function raBaixar() { if (S.ra.txt) baixar(new TextEncoder().encode(S.ra.txt), raNomeArq(), "text/plain;charset=utf-8"); }
+async function raCopiar() {
+  try { await navigator.clipboard.writeText(S.ra.txt); ui.toast("Relatório copiado."); }
+  catch (e) { const t = document.createElement("textarea"); t.value = S.ra.txt; t.style.position = "fixed"; t.style.opacity = "0"; document.body.appendChild(t); t.select(); let ok = false; try { ok = document.execCommand("copy"); } catch (e2) { ok = false; } t.remove(); ui.toast(ok ? "Relatório copiado." : "Não foi possível copiar: use Baixar.", ok ? "" : "e"); }
+}
+
+/* ---------- tela ---------- */
+function raResumo(E) {
+  const br = RA.br, pct = RA.pct, o = E.orig, c = E.opcoes && E.opcoes[0], cp = c && c.comparacao, va = E.ctx.vu_adotado || o.vu;
+  const ck = E.repro.checks, conf = !Object.keys(ck).length ? "não conferida" : Object.values(ck).every(Boolean) ? "confere" : "não confere";
+  const nImp = (S.ra.txt.match(/^IMP-\d+/gm) || []).length, nAch = (S.ra.txt.match(/^ACH-\d+/gm) || []).length;
+  const classe = !c ? "nenhum melhor" : cp.classe === "pior" ? "nenhum melhor" : cp.classe === "troca" ? `troca (${cp.melhor_pela_ordem ? "vence o alternativo" : "vence o laudo"})` : cp.classe;
+  const sug = c && (cp.classe === "domina" || cp.melhor_pela_ordem);
+  const tile = (rot, val, nota, cls) => `<div class="ra-tile ${cls || ""}"><span class="ra-tile-r">${rot}</span><b>${val}</b>${nota ? `<span class="small muted">${nota}</span>` : ""}</div>`;
+  return `<div class="ra-tiles">
+    ${tile("Reprodução", conf, "", conf === "confere" ? "ok" : "w")}
+    ${tile("Impedimentos", nImp, nImp ? "ver seção 3" : "", nImp ? "e" : "ok")}
+    ${tile("Achados", nAch, nAch ? "ver seção 4" : "", nAch ? "w" : "ok")}
+    ${tile("Alternativo", esc(classe.toUpperCase()), c ? `VU R$ ${br(c.vu)} (${pct(c.vu / va - 1)})` : "", sug ? "w" : "ok")}
+    ${tile("Valor do laudo", `R$ ${br(va)}`, `${esc(E.ctx.crit)} · por unidade da base`, "")}
+  </div>`;
+}
+function abaRA() {
+  if (!S.dados || !S.lido) return `<div class="banner w"><span class="bi">!</span><div><b>Sem modelo</b><span class="small">Abra o arquivo do modelo (.sda, .tsr ou relatório do SisDEA) para a revisão automática.</span></div><span></span></div>`;
+  const Mx = raEntrada(), r = S.ra.resp, E = S.ra.E;
+  const nAt = Mx.linhas.filter(l => l.ativo).length;
+  const respTxt = [r.grau ? `Grau ${["", "I", "II", "III"][r.grau]} declarado` : "", r.crit ? `critério ${r.crit} (informado)` : "", r.base !== undefined ? (r.base ? `base ${r.base} (informada)` : "sem base (informado)") : "", r.sinais ? Object.entries(r.sinais).map(([v, s]) => `${v} ${s > 0 ? "+" : s < 0 ? "−" : "sem expectativa"}`).join(", ") : "", r.reproOk ? "seguir sem conferir a reprodução" : ""].filter(Boolean).join(" · ");
+  const botoes = S.ra.rodando ? `<span class="ra-prog"><span class="ra-spin" aria-hidden="true"></span><span class="small" id="ra-prog-t">${esc(S.ra.prog)}</span></span>`
+    : `<div class="ra-bts"><button class="btn ${E ? "" : "btn-primary"}" data-ra-acao="rodar">${E ? "Rodar de novo" : "Rodar a revisão"}</button>${S.ra.txt ? `<button class="btn btn-primary" data-ra-acao="baixar">Baixar relatório (.txt)</button><button class="btn" data-ra-acao="copiar">Copiar</button>` : ""}</div>`;
+  let h = `<div class="card card-in ra-topo"><div><h3>Revisão automática</h3>
+    <span class="small">Refaz o modelo do arquivo, audita os dados, investiga as exclusões do autor, busca e compara modelos alternativos e grava o relatório (.txt) para o agente do Copilot. Só pergunta quando não tem como seguir; o resto decide pela regra e registra no diário.</span>
+    <span class="small muted ra-mod">Modelo: <b>${esc(Mx.arquivo)}</b> · ${esc(Mx.dep.nome)} · ${nAt} de ${Mx.linhas.length} dados habilitados. Usa o modelo como chegou no arquivo: o que for alterado na Análise não entra.</span>
+    ${respTxt ? `<span class="small muted ra-mod">Respostas: ${esc(respTxt)} <button class="btn-link" data-ra-acao="respostas">alterar</button></span>` : ""}</div>
+    <div class="ra-topo-r">${botoes}</div></div>`;
+  if (S.ra.erro) h += `<div class="banner e"><span class="bi">!</span><div><b>A revisão automática parou</b><span class="small">${esc(S.ra.erro)}</span></div><span></span></div>`;
+  if (E && S.ra.txt) h += raResumo(E) + `<div class="card card-in"><h3>Relatório para o agente<span class="sp"></span><span class="small muted">${fmtNumAuto(S.ra.txt.length)} caracteres · ${fmtNum(E.tempoTotal || E.tempo, 0)} s</span></h3><pre class="ra-txt">${esc(S.ra.txt)}</pre></div>`;
+  else if (!S.ra.rodando && !S.ra.erro) h += `<p class="small muted">A Contraprova continua disponível e independente: as duas ferramentas leem o mesmo modelo e podem ser comparadas.</p>`;
+  return `<div class="ra">${h}</div>`;
+}
+const desenharAbas1290 = desenharAbas;
+desenharAbas = function () {
+  if (S.aba !== "ra") return desenharAbas1290();
+  S.aba = "nbr"; try { desenharAbas1290(); } finally { S.aba = "ra"; }
+  const ab = $("#abas"); if (ab) { ab.classList.remove("passos"); ab.setAttribute("aria-label", "Seções"); ab.innerHTML = `<button role="tab" id="tab-ra" aria-selected="true" aria-controls="aba-conteudo" class="aba on" data-aba="ra">Relatório para o agente</button>`; }
+  const el = $("#aba-conteudo"); el.setAttribute("aria-labelledby", "tab-ra");
+  try { el.innerHTML = abaRA(); } catch (err) { console.error(err); el.innerHTML = `<div class="banner e"><span class="bi">!</span><div><b>Não foi possível montar a revisão automática</b><span class="small">${esc(err.message)}</span></div><span></span></div>`; }
+  ligarDicas(el);
+  /* automática: roda sozinha na primeira vez que a utilidade abre com um modelo */
+  if (S.dados && S.lido && !S.ra.E && !S.ra.rodando && !S.ra.erro && !S.ra.auto) { S.ra.auto = true; setTimeout(raRodar, 30); }
+};
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-ra-acao]"); if (!t) return;
+  const a = t.dataset.raAcao;
+  if (a === "rodar") { S.ra.erro = ""; return raRodar(); }
+  if (a === "baixar") return raBaixar();
+  if (a === "copiar") return raCopiar();
+  if (a === "respostas") { raZerar({}); S.ra.auto = true; desenhar(false); return raRodar(); }
+});
+document.head.insertAdjacentHTML("beforeend", `<style>
+#tela-explorar[data-ut=revauto] .ex-grid{grid-template-columns:minmax(0,1fr)}
+#tela-explorar[data-ut=revauto] #painel{display:none}
+#tela-explorar[data-ut=revauto] .abas-box{max-width:1180px;width:100%;margin:0 auto}
+.ra{display:grid;gap:14px}
+.ra-topo{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 18px;align-items:start}
+.ra-topo h3{margin:0 0 4px}.ra-topo .small{display:block;max-width:760px}.ra-mod{margin-top:6px}
+.ra-topo-r{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.ra-bts{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.ra-prog{display:inline-flex;align-items:center;gap:8px;max-width:340px}
+.ra-spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--petrol);animation:ra-gira .8s linear infinite;flex:none}
+@keyframes ra-gira{to{transform:rotate(360deg)}}
+.ra-tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.ra-tile{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.ra-tile b{font-size:16px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.ra-tile-r{font-size:11px;font-weight:700;color:var(--ink-3);text-transform:uppercase;letter-spacing:.03em}
+.ra-tile.ok{border-left-color:var(--ok)}.ra-tile.w{border-left-color:var(--gold)}.ra-tile.e{border-left-color:var(--err)}
+.ra-txt{margin:0;max-height:70vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:Consolas,"Cascadia Mono","SF Mono",Menlo,monospace;font-size:12px;line-height:1.5;background:var(--bg);border:1px solid var(--line-2);border-radius:8px;padding:12px 14px}
+.ra-q{border:1px solid var(--line);border-radius:8px;padding:8px 12px 10px;margin:0 0 10px}
+.ra-q legend{font-weight:700;padding:0 4px}.ra-q p{margin:2px 0 8px}
+.ra-op{display:flex;flex-wrap:wrap;gap:6px 16px}.ra-op label{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+@media (max-width:860px){#utils.utils{grid-template-columns:repeat(6,minmax(0,1fr))}.ra-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.ra-topo{grid-template-columns:minmax(0,1fr)}.ra-topo-r{align-items:flex-start}.ra-bts{justify-content:flex-start}}
+@media (max-width:520px){#utils .util,#utils .util:nth-child(n+4){grid-column:span 2}}
+</style>`);
+const abrirAjuda1290 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1290();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.29.0:</b> nova utilidade <b>Revisão automática</b>, que faz no Módulo o trabalho do motor que rodava no Copilot (motor_inferencia v4.4): refaz o modelo do arquivo, audita os dados, mede o efeito das exclusões do autor e da combinação de características do avaliando, parte de todos os dados para achar dados discrepantes com motivo calculado, busca e compara modelos alternativos em valor unitário (dominância e ordem de desempate) e grava o relatório (.txt) que o agente do Copilot lê. Roda sozinha ao abrir a utilidade e só pergunta o grau declarado e, quando o arquivo não permite deduzir, o critério, a variável base, o sinal esperado de uma variável que pesa no valor ou se segue quando a reprodução não confere. A Contraprova continua igual e independente.</p>`);
+};
+
+/* v1.29.1 — exclusões fora dos critérios de escolha (decisão de 14/10/2026, 23h47) */
+const abrirAjuda1291 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1291();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.29.1:</b> na Revisão automática, exclusões de dados (justificadas ou não) deixaram de ser critério de escolha. A versão com as exclusões do autor disputa como as outras e o modelo do laudo é comparado como está. A tabela de comparação mostra, só como informação, o número de dados excluídos e quanto cada modelo erra nos dados que deixou de fora.</p>`);
+};
+
+/* v1.30.0 — auditoria dos dados com classificação e perfil do avaliando (vizinhos e alavancagem) na Revisão automática */
+const abrirAjuda1300 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1300();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.30.0:</b> o relatório da Revisão automática classifica os dados suspeitos (provável erro de digitação, verificar, legítimo mas extremo) com a decisão proposta, mostra os 5 dados mais parecidos com o avaliando nas variáveis do modelo do laudo (se concordam entre si e onde fica o valor do laudo) e a alavancagem do avaliando. Erro de digitação, dado a verificar, valor do laudo fora do intervalo dos mais parecidos e avaliando fora da nuvem dos dados entram como achados. A busca e a escolha do alternativo não mudaram.</p>`);
+};
+
+/* v1.31.0 — estabilidade (sem cada dado e 1.000 reamostragens, semente fixa) na Revisão automática */
+const abrirAjuda1310 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1310();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.31.0:</b> o relatório da Revisão automática mostra a estabilidade do modelo do laudo e das 3 primeiras opções: o valor unitário refeito sem cada dado usado (e os dados que mais o mudam) e a faixa P10 a P90 em 1.000 reamostragens dos dados, com semente fixa (o resultado se repete). Só informa; a escolha do alternativo não mudou.</p>`);
+};
+
 </script>
 </body>
 </html>
