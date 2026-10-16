@@ -2238,7 +2238,7 @@ const EXEMPLO = {"entrega": {"avaliacao_id": "3b9e6f2a-8c41-4d7e-a5b2-91c0d4e7f5
 /* =====================================================================
    Inferência — exploração de modelos de regressão (protótipo independente) · v0.5.0
    ===================================================================== */
-const INF_VERSAO = "1.34.1";
+const INF_VERSAO = "1.36.1";
 Object.assign(TX, {
   X3: { r: "x³", f: v => v * v * v, ok: v => true, cresc: 1 },
   INV_X3: { r: "1/x³", f: v => 1 / (v * v * v), ok: v => v !== 0, cresc: -1 },
@@ -5013,13 +5013,14 @@ function motorBusca(escopo) {
       for (let i = 0; i < n; i++) z[i] = (a[i] - mu) / sd;
       return [z, sd];
     };
-    cfg.X.forEach(a => Z.push(pad(a)[0]));
+    const muX = [], sdX = [];   // v1.36.1: média e desvio de cada coluna, para a conta do sinal da base na unidade declarada
+    cfg.X.forEach(a => { const [z, sd] = pad(a); Z.push(z); sdX.push(sd); let mu = 0; for (let i = 0; i < n; i++) mu += a[i]; muX.push(mu / n); });
     const muY = [];
     cfg.Y.forEach(a => { const [z, sd] = pad(a); Zy.push(z); sdY.push(sd); let mu = 0; for (let i = 0; i < n; i++) mu += a[i]; muY.push(mu / n); });
     const todas = Z.concat(Zy), M = todas.length, C = new Float64Array(M * M);
     for (let a = 0; a < M; a++) for (let b = 0; b <= a; b++) { const za = todas[a], zb = todas[b]; let s = 0; for (let i = 0; i < n; i++) s += za[i] * zb[i]; C[a * M + b] = C[b * M + a] = s; }
     const dic = {}; Object.keys(cfg.dic || {}).forEach(v => { dic[v] = cfg.dic[v]; });
-    P = { cfg, n, nc: Z.length, Z, Zy, sdY, muY, C, M, dic, cat: cfg.cat || null, r2o: cfg.ordem === "R2o" && !!cfg.Yo };
+    P = { cfg, n, nc: Z.length, Z, Zy, sdY, muY, C, M, dic, cat: cfg.cat || null, r2o: cfg.ordem === "R2o" && !!cfg.Yo, muX, sdX };
   }
 
   /* ---------- v1.13.0: R² das estimativas em R$ (escala original) ----------
@@ -5043,6 +5044,23 @@ function motorBusca(escopo) {
     return { R2o: nImp || !(sqt > 0) ? NaN : 1 - sqe / sqt, nImp };
   }
 
+  /* v1.36.1: sinal de uma coluna. Sem dependente trocada, a regra de sempre (sinal do coeficiente × crescimento das transformações).
+     Com a dependente trocada (VU ↔ VT, cfg.baseChk), a área base é conferida na unidade em que o sinal foi declarado: o valor do
+     avaliando com a área +10%, convertido (VT ÷ área ou VU × área), como efeitoNaUnidadeDeclarada (v1.33.1) faz na Análise. */
+  function sinalIncoerente(yi, cols, b, j) {
+    const cfg = P.cfg, c = cols[j], BC = cfg.baseChk;
+    if (BC && BC.isBase[c]) {
+      const cod = cfg.yCod[yi], k = cols.length, sY = P.sdY[yi];
+      let y0 = P.muY[yi], d = 0, ok = true;
+      for (let q = 0; q < k; q++) { const cq = cols[q], bo = b[q] * sY / P.sdX[cq], x0 = BC.x0[cq]; if (!Number.isFinite(x0)) ok = false; else y0 += bo * (x0 - P.muX[cq]); if (BC.isBase[cq]) d += bo * (BC.x1[cq] - x0); }
+      if (ok || cod === "LN_Y") {
+        if (!ok) y0 = 0;   // em ln(y) o efeito relativo não depende do nível
+        const V0 = invY(cod, y0), V1 = invY(cod, y0 + d);
+        if (V0 > 0 && V1 > 0) { const A = BC.A, U0 = BC.cur ? V0 / A : V0 * A, U1 = BC.cur ? V1 / (1.1 * A) : V1 * 1.1 * A, r = U1 / U0 - 1, s = Math.abs(r) < 1e-9 ? 0 : Math.sign(r); return BC.s !== 0 && s !== BC.s; }
+      }
+    }
+    const sg = cfg.colS[c] * cfg.yC[yi]; return !!sg && Math.sign(b[j]) !== sg;
+  }
   /* ---------- julgamento de um ajuste: testes, sinais, VIF, critérios de informação ---------- */
   function julgar(yi, cols, b, Ai, A, SQE, Syy, m, nExcl, ativo, ro) {
     const cfg = P.cfg, k = cols.length, gl = m - k - 1;
@@ -5054,7 +5072,7 @@ function motorBusca(escopo) {
     for (let j = 0; j < k; j++) { const t = b[j] / Math.sqrt(s2 * Ai[j * k + j]); if (!(Math.abs(t) >= tc)) fal++; }
     const F = (R2 / k) / ((1 - R2) / gl);
     if (!(F >= fCrit(k, gl, cfg.alfaF))) fal++;
-    if (cfg.sinal) for (let j = 0; j < k; j++) { const sg = cfg.colS[cols[j]] * cfg.yC[yi]; if (sg && Math.sign(b[j]) !== sg) fal++; }
+    if (cfg.sinal) for (let j = 0; j < k; j++) if (sinalIncoerente(yi, cols, b, j)) fal++;   // v1.36.1: base na unidade declarada (dependente trocada)
     let vif = 1; for (let j = 0; j < k; j++) vif = Math.max(vif, A[j * k + j] * Ai[j * k + j]);
     if (cfg.vifMax && vif > cfg.vifMax) fal++;
     if (cfg.nMin && m < (cfg.nMinMult || 3) * (k + 1)) fal++;   // v1.22.1 (C5): múltiplo do grau escolhido (3/4/6), igual a fundamentacao()
@@ -5067,7 +5085,7 @@ function motorBusca(escopo) {
     for (let j = 0; j < k; j++) { const t = Math.abs(b[j] / Math.sqrt(s2 * Ai[j * k + j])); if (!(t >= tmin)) { tmin = Number.isFinite(t) ? t : 0; jmin = j; } }
     const NT = cfg.nivT || [0.1, 0.2, 0.3], NF = cfg.nivF || [0.01, 0.02, 0.05];
     for (let q = 0; q < 3; q++) { if (!(tmin >= tCrit(gl, NT[q]))) mot |= 1 << q; if (!(F >= fCrit(k, gl, NF[q]))) mot |= 8 << q; }
-    for (let j = 0; j < k; j++) { const sg = cfg.colS[cols[j]] * cfg.yC[yi]; if (sg && Math.sign(b[j]) !== sg) { mot |= 64; (sinErr || (sinErr = [])).push(cols[j]); } }
+    for (let j = 0; j < k; j++) if (sinalIncoerente(yi, cols, b, j)) { mot |= 64; (sinErr || (sinErr = [])).push(cols[j]); }   // v1.36.1
     if (vif > 5) mot |= 128; if (vif > 10) mot |= 256;
     if (m < 3 * (k + 1)) mot |= 512;
     if (P.cat) { const mc = m <= 30 ? 3 : m <= 100 ? Math.ceil(m / 10) : 10, vistos = {};
@@ -15497,6 +15515,913 @@ raEntrada = function () {
     Mx.cols = [...Mx.cols, { nome: n, tipo: "QUANTITATIVA", inc: false, tr: "X", sinal: 0 }];
   });
   return Mx;
+};
+
+/* =====================================================================
+   v1.35.0 — Dependência do modelo e Conclusão na Revisão automática; variável base pelo valor redondo
+   Decisões de 16/10/2026 (claude/Dependencia_do_modelo_proposta.md, aprovada às 10h55; respostas de 11h17):
+   1. Variável base com mais de uma área: escolhida pelo valor redondo (VU × área, a mesma conta do "Criar VT" da
+      v1.32.0), depois pela descrição da dependente, por último pelo nome (como antes), com aviso da escolha.
+      Vale para o Módulo (topo, Contraprova, gravação) e para a Revisão automática (deixa de perguntar quando deduz).
+   2. Revisão automática:
+      - faixa dos modelos válidos contra TODOS os válidos (cada modelo conta), com achado quando o laudo fica fora de
+        P10–P90; amplitude do espectro (P90 − P10) ÷ mediana: até 30% estreito, até 50% moderado, acima largo;
+      - sinais novos: R² em VU baixo (modelo em VT), precisão aparente (erro fora da amostra > amplitude do IC 80%),
+        laudo a mais de 15% da mediana dos 5 vizinhos (mesmo dentro do intervalo), arquivo sem variáveis fora do
+        modelo, variável significante só com as exclusões do autor;
+      - camada de síntese: os sinais viram hipóteses (H1 a H5), as hipóteses com a mesma causa viram um pedido só,
+        no máximo 5 pedidos por ordem de efeito no valor, e um veredito (Aceitar / Aceitar com ressalvas /
+        Pedir complementação / Pedir ajustes / Recusar);
+      - cartão "Conclusão" no topo da tela, com as tabelas de antes recolhidas em "Detalhes";
+      - relatório .txt: seção "## 0. CONCLUSÃO" no topo, achados novos na seção 4 e a faixa na seção
+        "## 8. DEPENDÊNCIA DO MODELO" (a seção 6 aponta para ela).
+   3. O relatório (.txt) não é mais baixado sozinho ao rodar: fica o botão "Baixar relatório (.txt)".
+   Limites novos em RA.REGRAS, todos "a confirmar". A classificação (domina, equivalente etc.) não muda.
+   Só acrescenta código: invólucros que chamam a versão anterior.
+   ===================================================================== */
+
+/* ---------- 1. variável base pelo valor redondo / descrição ---------- */
+function casasArr(vs) {
+  const v = vs.filter(x => Number.isFinite(x) && x !== 0); if (!v.length) return 6;
+  for (let c = 0; c <= 6; c++) { const f = 10 ** c; if (v.every(x => Math.abs(x * f - Math.round(x * f)) < 1e-6 * Math.max(1, Math.abs(x * f)))) return c; }
+  return 7;
+}
+const BASE_TIPO = [
+  ["construida", /constru|edifica|benfeit|privativ|\butil\b|equivalente/],
+  ["terreno", /terreno|\blote\b|gleba|\bat\b/]
+];
+const baseTipo = n => { const t = normX(n); for (const [k, re] of BASE_TIPO) if (re.test(t)) return k; return null; };
+/* dep: valores da dependente (VU); areas: [[nome, valores]]; desc: descrição da dependente.
+   Devolve { col, como: "redondo" | "descricao", n, tot, outras:[{col,n}], txt } ou null. */
+function baseDeduzidaDe(depNome, dep, areas, desc) {
+  if (areas.length < 2) return null;
+  const casas = casasArr(dep);
+  const conta = areas.map(([col, a]) => {
+    let n = 0, tot = 0;
+    dep.forEach((vu, i) => {
+      const x = a[i]; if (!(vu > 0 && x > 0)) return; tot++;
+      if (casas > 6) { const b = vu * x; if (Math.abs(b - Math.round(b / 1000) * 1000) < 1e-6 * b) n++; return; }
+      const c = vtReconstituido(vu, x, casas);
+      if (c > 0 && Math.abs(c - Math.round(c / 1000) * 1000) < 1e-6) n++;
+    });
+    return { col, n, tot };
+  }).sort((a, b) => b.n - a.n);
+  const [p, s] = conta;
+  if (p.tot >= 5 && p.n >= 0.5 * p.tot && p.n >= 2 * s.n) {
+    const outras = conta.slice(1);
+    return { col: p.col, como: "redondo", n: p.n, tot: p.tot, outras,
+      txt: `${depNome} × ${p.col} dá valor redondo em ${p.n} de ${p.tot} dados (${outras.map(o => `com ${o.col}: ${o.n}`).join("; ")})` };
+  }
+  const d = normX(desc || "");
+  if (d) {
+    const tipo = /constru|edifica|benfeit|privativ/.test(d) ? "construida" : /terreno|\blote\b|gleba/.test(d) ? "terreno" : null;
+    const cs = tipo ? areas.filter(([c]) => baseTipo(c) === tipo) : [];
+    if (cs.length === 1) {
+      const m = (desc.match(new RegExp(`[^.;]*?(constru|edifica|benfeit|privativ|terreno|lote|gleba)[^.;]*`, "i")) || [desc])[0].trim();
+      return { col: cs[0][0], como: "descricao", txt: `a descrição de ${depNome} diz “${m.length > 90 ? m.slice(0, 90) + "…" : m}”` };
+    }
+  }
+  return null;
+}
+/* no Módulo: áreas candidatas e dedução, só com a dependente em valor unitário */
+function baseDeduzidaModulo() {
+  if (!S.dados || !S.dep || !S.dep.col) return null;
+  const dep = S.dep.col, L = S.dados.linhas, ys = L.map(l => l.v[dep]);
+  const areas = S.vars.filter(v => v.col !== dep && v.col !== S.depAlt && ehArea(v.col) && L.every(l => !(l.v[dep] > 0) || l.v[v.col] > 0)).map(v => [v.col, L.map(l => l.v[v.col])]);
+  if (areas.length < 2) return null;
+  const desc = (S.externo && S.externo.descs && S.externo.descs[dep]) || "";
+  return Object.assign(baseDeduzidaDe(dep, ys, areas, desc) || { col: null, como: "nome" }, { areas: areas.map(a => a[0]) });
+}
+const inferirCat1350 = inferirCat;
+inferirCat = function () {
+  const arq0 = S.catArq;
+  const x = inferirCat1350.apply(this, arguments);
+  try { baseAjustar1350(arq0); } catch (e) { console.warn(e); }
+  return x;
+};
+function baseAjustar1350(arq0) {
+  S.baseDed = null;
+  if (!S.dados || S.cat !== "unit" || !S.base) return;
+  if (arq0 && arq0.base) return;                                      // o arquivo grava a base (.sda: VarVinculada)
+  const C = S.calcDep; if (C && (S.dep.col === C.col || S.dep.col === C.de)) return;   // coluna calculada: a conta diz a base
+  if (S.areaRazao && S.areaRazao === S.base) return;                  // deduzida pela razão VT ÷ área (v1.16)
+  const d = baseDeduzidaModulo(); if (!d) return;
+  const dep = S.dep.col;
+  if (d.col && d.col !== S.base) { S.base = d.col; sincronizarCat(); }
+  S.baseDed = d.col ? { col: d.col, como: d.como, txt: d.txt } : { col: S.base, como: "nome", txt: "" };
+  catAviso(d.col
+    ? `Variável base: ${d.col} — ${d.txt}. Confira no cartão Modelo.`
+    : `Variável base: ${S.base}, a primeira área pelo nome; nem os valores nem a descrição de ${dep} indicam qual área (${d.areas.join(", ")}) multiplica o valor unitário. Confira no cartão Modelo.`);
+}
+
+/* Revisão automática: base deduzida do mesmo jeito, sem perguntar, quando o arquivo não tem VT */
+const raLerFicha1350 = RA.lerFicha;
+RA.lerFicha = function (Mx, bi) {
+  const F = raLerFicha1350(Mx, bi);
+  if (F.base || bi || F.nAreas < 2) return F;
+  const dep = Array.from(F.cols[F.dep]);
+  const unit = ehUnitario(F.dep) || (() => { const s = dep.filter(x => x > 0).sort((a, b) => a - b); return s.length >= 5 && s[s.length >> 1] <= 20000; })();
+  if (!unit) return F;
+  const areas = F.nomes.filter(n => F.tipos[n] !== "dep" && RA.ehArea(n, F.tipos[n]) && Array.from(F.cols[n]).every((x, i) => !(dep[i] > 0) || x > 0)).map(n => [n, Array.from(F.cols[n])]);
+  const d = baseDeduzidaDe(F.dep, dep, areas, (F.descs || {})[F.dep] || "");
+  if (!d) return F;
+  const G = raLerFicha1350(Mx, d.col);
+  if (G.base === d.col) { G.origemBase = d.como === "redondo" ? `deduzida pelo valor redondo: ${d.txt}` : `deduzida da descrição: ${d.txt}`; G.baseDed = d; return G; }
+  return F;
+};
+
+/* ---------- 2. limites (a confirmar) ---------- */
+Object.assign(RA.REGRAS, {
+  dep_min_modelos: 10,      // faixa só com 10 modelos válidos ou mais
+  dep_pctl: [10, 90],       // posição do laudo: fora de P10–P90 = achado
+  dep_amp_mod: 0.30,        // amplitude (P90 − P10) ÷ mediana: até 30% estreito; até 50% moderado; acima, largo
+  dep_amp_largo: 0.50,
+  dep_tol_comp: 1.25,       // competitivos: erro fora da amostra até 1,25 × o do melhor (só informa nesta versão)
+  h3_r2vu_min: 0.50,        // modelo em VT: R² ajustado em VU abaixo de 0,50 ...
+  h3_r2vu_queda: 0.25,      // ... ou mais de 0,25 abaixo do R² ajustado da dependente
+  h3_viz_dif: 0.15,         // laudo a mais de 15% da mediana dos 5 vizinhos, mesmo dentro do intervalo
+  max_pedidos: 5
+});
+
+/* ---------- 3. síntese: sinais → hipóteses → pedidos → veredito ---------- */
+function raQuant(s, q) { const h = (s.length - 1) * q, lo = Math.floor(h); return s[lo] + (s[Math.min(lo + 1, s.length - 1)] - s[lo]) * (h - lo); }
+function raPctl(s, x) { const n = s.length; return n ? (s.filter(v => v < x).length / n * 100 + s.filter(v => v === x).length / n * 50) : NaN; }
+function raSintese(E, txt) {
+  const R = RA, RG = R.REGRAS, br = R.br, pct = R.pct, F = E.F, ctx = E.ctx, o = E.orig, A = E.achados || {}, ops = E.opcoes || [];
+  const dado = i => "dado " + R.idTxt(F, i), dados = ids => R.listaIds(F, ids);
+  const nomeDep = F.dep.replace(/ \(modelo atual\)$/, "");
+  /* unidade: com a dependente em VT e sem base no motor, converte para VU pela base do Módulo (ou a única área) */
+  const depTotal = F.dep === F.vt || (S.dep && S.dep.col === F.dep && typeof catAtual === "function" && catAtual() === "total");
+  const baseMod = ctx.base || ctx.areaObrig || (S.base && F.cols[S.base] ? S.base : null);
+  const conv = depTotal && !(F.dep === F.vt && ctx.base) && baseMod && ctx.av[baseMod] > 0 ? 1 / ctx.av[baseMod] : 1;
+  const emVU = !depTotal || conv !== 1 || (F.dep === F.vt && ctx.base);
+  const un = emVU ? "VU" : "valor";
+  const aBase = baseMod && ctx.av[baseMod] > 0 ? ctx.av[baseMod] : null;
+  const va = (ctx.vu_adotado || o.vu) * conv;
+  const tot = v => aBase && emVU ? ` (total R$ ${br(v * aBase, 0)})` : "";
+
+  /* faixa: todos os válidos, cada modelo conta */
+  const vals = E.candidatos.map(c => c.vu * conv).filter(Number.isFinite).sort((a, b) => a - b);
+  let faixa = null;
+  if (vals.length >= RG.dep_min_modelos) {
+    const [plo, phi] = RG.dep_pctl, p10 = raQuant(vals, plo / 100), med = raQuant(vals, 0.5), p90 = raQuant(vals, phi / 100);
+    const amp = (p90 - p10) / med, larg = amp <= RG.dep_amp_mod ? "estreito" : amp <= RG.dep_amp_largo ? "moderado" : "largo";
+    const pos = va < p10 ? "abaixo" : va > p90 ? "acima" : "miolo", foraTudo = va < vals[0] || va > vals[vals.length - 1];
+    const eBest = Math.min(o.erro, ...E.candidatos.map(c => c.erro).filter(Number.isFinite));
+    const comp = E.candidatos.filter(c => c.erro <= RG.dep_tol_comp * eBest).map(c => c.vu * conv).sort((a, b) => a - b);
+    const porVersao = E.versoes.map(v => { const s = E.candidatos.filter(c => c.versao === v.rotulo).map(c => c.vu * conv).sort((a, b) => a - b); return { rot: v.rotulo, n: s.length, med: s.length ? raQuant(s, 0.5) : NaN }; }).filter(x => x.n);
+    faixa = { n: vals.length, vals, p10, med, p90, min: vals[0], max: vals[vals.length - 1], amp, larg, pos, foraTudo, pctl: raPctl(vals, va),
+      comp: comp.length >= 5 ? { n: comp.length, p10: raQuant(comp, plo / 100), med: raQuant(comp, 0.5), p90: raQuant(comp, phi / 100), pctl: raPctl(comp, va), tol: RG.dep_tol_comp } : null,
+      porVersao, op1: ops[0] ? { vu: ops[0].vu * conv, pctl: raPctl(vals, ops[0].vu * conv) } : null };
+  }
+
+  /* exclusões do autor */
+  const lim = R.NORMA.grau[ctx.grau] ? R.NORMA.grau[ctx.grau].sig : 0.2, linhas = A.linhas || [], l0 = linhas[0];
+  const reinc = linhas.slice(1).filter(l => l.ok && l.rotulo !== "todos os dados" && Math.abs(l.var) > RG.sens_exclusao);
+  const lTodos = linhas.find(l => l.ok && l.rotulo === "todos os dados");
+  const soComExcl = l0 && l0.ok && lTodos ? Object.keys(l0.sig).filter(v => l0.sig[v] <= lim && lTodos.sig[v] > lim).map(v => ({ v, com: l0.sig[v], sem: lTodos.sig[v] })) : [];
+  const combs = (A.achados || []).filter(a => a.cod === "comb");
+  const errEx = (A.erros || []).filter(x => Number.isFinite(x.erro));
+
+  /* vizinhos em VU */
+  const vz = E.viz;
+  let viz = null;
+  if (vz && vz.k >= 3) {
+    const vs = vz.viz.map(x => x.vu * (conv !== 1 && baseMod ? 1 / F.cols[baseMod][x.id] : 1)).filter(Number.isFinite);
+    if (vs.length >= 3) { const md = raQuant(vs.slice().sort((a, b) => a - b), 0.5); viz = { med: md, min: Math.min(...vs), max: Math.max(...vs), dif: va / md - 1, k: vs.length, ids: vz.viz.map(x => x.id) }; }
+  }
+
+  /* R² em VU (modelo em VT) */
+  let r2vu = null;
+  if (depTotal) {
+    if (F.dep === F.vt && ctx.base) r2vu = { vu: o.r2a_vu, dep: o.R2a };
+    else if (baseMod && E.repro && E.repro.m) {
+      const m = E.repro.m, inv = R.INV_Y[m.ytr], n = m.n, k = m.k; let sr = 0, st = 0; const obs = [], aj = [];
+      for (let j = 0; j < n; j++) { const i = m.idx[j], b = F.cols[baseMod][i]; obs.push(F.cols[F.dep][i] / b); aj.push(inv(m.Y[j] - m.e[j]) / b); }
+      const mo = obs.reduce((s, x) => s + x, 0) / n; obs.forEach((x, j) => { sr += (x - aj[j]) ** 2; st += (x - mo) ** 2; });
+      const v = 1 - (sr / st) * (n - 1) / (n - k - 1); if (Number.isFinite(v)) r2vu = { vu: v, dep: o.R2a };
+    }
+  }
+
+  /* ---- hipóteses ---- */
+  const H = {};
+  if (faixa && faixa.pos !== "miolo") H.H1 = { forte: true, dir: faixa.pos, foraTudo: faixa.foraTudo };
+  if (reinc.length || soComExcl.length) {
+    const dirs = reinc.map(l => Math.sign(l.var));
+    H.H2 = { forte: true, reinc, soComExcl, combs, dir: dirs.length && dirs.every(d => d < 0) ? "baixa" : dirs.length && dirs.every(d => d > 0) ? "sobe" : null };
+  }
+  const s3 = [];
+  if (r2vu && Number.isFinite(r2vu.vu) && (r2vu.vu < RG.h3_r2vu_min || r2vu.dep - r2vu.vu > RG.h3_r2vu_queda))
+    s3.push({ cod: "r2vu", txt: `R² ajustado ${br(r2vu.dep, 2)} em ${R.NOME_Y[F.ytr].replace("y", nomeDep)}, mas ${br(r2vu.vu, 2)} em VU: a área explica a escala do valor total, não o preço por m²` });
+  if (Number.isFinite(o.erro) && Number.isFinite(o.amp) && o.erro > o.amp)
+    s3.push({ cod: "precisao", txt: `erro de previsão fora da amostra de ${pct(o.erro, 1, false)}, maior que a amplitude do IC 80% (${pct(o.amp, 1, false)}): a precisão Grau ${R.ROMANO[o.gp]} é aparente` });
+  if (viz && Math.abs(viz.dif) > RG.h3_viz_dif)
+    s3.push({ cod: "viz", txt: `valor do laudo ${pct(viz.dif)} em relação à mediana dos ${viz.k} dados mais parecidos com o avaliando (R$ ${br(viz.med)}; de R$ ${br(viz.min)} a R$ ${br(viz.max)})` });
+  if (vz && Number.isFinite(vz.h0) && vz.h0 > vz.hMax)
+    s3.push({ cod: "alav", txt: `o avaliando fica fora da nuvem dos dados (alavancagem ${br(vz.h0, 3)}, maior que a de qualquer dado usado: ${br(vz.hMax, 3)})` });
+  if (s3.length) H.H3 = { forte: s3.length >= 2, sinais: s3 };
+  const ehTexto = n => F.tipos[n] === "texto" || /coorden|latitude|longitude/.test(normX(n));
+  const naoModelo = F.nomes.filter(n => F.tipos[n] !== "dep" && !ehTexto(n) && !n.includes("÷") && !F.modelo.some(s => s[0] === n) && !/^valor total \(/i.test(n));
+  if (!naoModelo.length) H.H4 = { forte: true, nVars: F.modelo.length, semDesab: !F.desab.length };
+  if (faixa && faixa.larg !== "estreito") H.H5 = { forte: faixa.larg === "largo", larg: faixa.larg };
+
+  /* ---- pedidos ---- */
+  const P = [];
+  const add = p => P.push(p);
+  const fxTxt = f => `que vão de R$ ${br(f.p10)} a R$ ${br(f.p90)} (P10 a P90; mediana R$ ${br(f.med)}; ${ampTxt(f)})`;
+  const posTxt = f => `o valor do laudo, ${un} R$ ${br(va)}${tot(va)}, fica no percentil ${R.fixPy(f.pctl, 0)} dos ${br(f.n, 0)} modelos válidos com estes dados${f.foraTudo ? `, ${f.pos === "acima" ? "acima" : "abaixo"} de todos eles` : ""}`;
+  const ampTxt = f => `espectro ${f.larg}, ${pct(f.amp, 1, false)} da mediana`;
+  const evFaixa = f => [
+    `Posição: percentil ${R.fixPy(f.pctl, 0)} de ${br(f.n, 0)} modelos válidos (todas as combinações de variáveis, transformações e versões dos dados que passam nos filtros; cada modelo conta)`,
+    `Faixa: P10 R$ ${br(f.p10)}; mediana R$ ${br(f.med)}; P90 R$ ${br(f.p90)}; mínimo R$ ${br(f.min)}; máximo R$ ${br(f.max)} — ${ampTxt(f)} (P90 − P10)` + (aBase && emVU ? `; em valor total (× ${baseMod} = ${br(aBase)}): R$ ${br(f.p10 * aBase, 0)} a R$ ${br(f.p90 * aBase, 0)}, laudo R$ ${br(va * aBase, 0)}` : ""),
+    ...(f.porVersao.length > 1 ? [`Por versão dos dados (mediana): ${f.porVersao.map(x => `${x.rot} R$ ${br(x.med)} (${x.n})`).join("; ")}`] : []),
+    ...(viz ? [`Âncora: mediana dos ${viz.k} dados mais parecidos com o avaliando R$ ${br(viz.med)} (laudo ${pct(viz.dif)})`] : [])
+  ];
+  const evExcl = h => [
+    ...h.reinc.map(l => `${l.rotulo[0].toUpperCase()}${l.rotulo.slice(1)}, o ${un} vai a R$ ${br(l.vu * conv)} (${pct(l.var)})`),
+    ...(lTodos && !h.reinc.includes(lTodos) ? [`Com todos os dados: R$ ${br(lTodos.vu * conv)} (${pct(lTodos.var)})`] : []),
+    ...h.soComExcl.map(x => `${x.v} é significante só com as exclusões: ${br(x.com * 100)}% com elas, ${br(x.sem * 100)}% com todos os dados (limite do Grau ${R.ROMANO[ctx.grau]}: ${br(lim * 100, 0)}%)`),
+    ...h.combs.map(a => a.txt[0].toUpperCase() + a.txt.slice(1)),
+    ...(errEx.length ? [`Nos dados excluídos, o modelo do laudo erra ${errEx.map(x => `${pct(x.erro)} no ${dado(x.id)}`).join("; ")}`] : [])
+  ];
+  const idsReinc = h => [...new Set(h.reinc.flatMap(l => l.reinc || []))].sort((a, b) => a - b);
+  const efExcl = h => Math.max(0, ...h.reinc.map(l => Math.abs(l.var)), lTodos ? Math.abs(lTodos.var) : 0);
+
+  /* impedimentos (parte da NBR) e reprodução */
+  const imps = (txt.match(/^IMP-\d+ — .*$/gm) || []).map(l => l.replace(/^IMP-\d+ — /, ""));
+  if (imps.length) add({ cod: "IMP", forte: true, ordem: 0, titulo: `Impedimento${imps.length > 1 ? "s" : ""} da NBR 14653-2 no modelo do laudo`,
+    resumo: `O modelo do laudo não atende ${imps.length > 1 ? "a " + imps.length + " exigências" : "a uma exigência"} do Grau ${R.ROMANO[ctx.grau]} declarado.`,
+    pedido: ops.length ? `Corrigir o modelo (a opção 1 da revisão atende aos filtros) ou rebaixar o grau declarado.` : `Corrigir o modelo ou rebaixar o grau declarado; com estes dados, nenhum modelo alternativo atende ao Grau ${R.ROMANO[ctx.grau]}.`,
+    ev: imps });
+  const ck = (E.repro && E.repro.checks) || {};
+  if (Object.keys(ck).length && !Object.values(ck).every(Boolean)) add({ cod: "REPRO", forte: true, ordem: 1, titulo: "O arquivo não reproduz o laudo",
+    resumo: `O modelo refeito com os dados habilitados do arquivo não confere com o que o arquivo gravou (${Object.entries(ck).filter(([, v]) => !v).map(([k]) => k).join(", ")}).`,
+    pedido: "Enviar o arquivo do modelo que gerou o laudo.", ev: Object.entries(ck).map(([k, v]) => `${k}: ${v ? "confere" : "não confere"}`) });
+
+  /* modelo alternativo melhor */
+  const c1 = ops[0], cp1 = c1 && c1.comparacao, vence = cp1 && (cp1.classe === "domina" || cp1.melhor_pela_ordem);
+  if (vence) add({ cod: "ALT", forte: true, efeito: Math.abs(c1.vu * conv / va - 1), titulo: "Há modelo melhor com estes dados",
+    resumo: `A opção 1 ${cp1.classe === "domina" ? "é igual ou melhor que o laudo em todos os critérios" : `vence o laudo pela ordem de desempate (${cp1.decidido_por ? cp1.decidido_por.toLowerCase() : "critérios"})`} e dá ${un} R$ ${br(c1.vu * conv)}${tot(c1.vu * conv)}, ${pct(c1.vu * conv / va - 1)} sobre o laudo.`,
+    pedido: "Adotar o modelo da opção 1 ou justificar por que o modelo do laudo é preferível.",
+    ev: [`Classe: ${cp1.classe.toUpperCase()}${cp1.melhor.length ? `; melhor em: ${cp1.melhor.join(", ").toLowerCase()}` : ""}${cp1.pior.length ? `; pior em: ${cp1.pior.join(", ").toLowerCase()}` : ""}`,
+      `Opção 1: ${raFmtEq(c1)}; ${c1.n} dados; erro fora da amostra ${pct(c1.erro, 1, false)} (laudo ${pct(o.erro, 1, false)})`], montar: 0 });
+
+  /* H1 + H2 + H5: dependência do valor */
+  const mesmaCausa = H.H1 && H.H2 && ((H.H1.dir === "acima" && H.H2.dir === "baixa") || (H.H1.dir === "abaixo" && H.H2.dir === "sobe"));
+  if (mesmaCausa) {
+    const ids = idsReinc(H.H2), alto = H.H1.dir === "acima";
+    add({ cod: "H1+H2", hs: ["H1", "H2"], forte: true, efeito: Math.max(Math.abs(faixa.med / va - 1), efExcl(H.H2)),
+      titulo: `O valor ${alto ? "alto" : "baixo"} vem das exclusões`,
+      resumo: `${posTxt(faixa)[0].toUpperCase()}${posTxt(faixa).slice(1)}, ${fxTxt(faixa)}. A diferença vem dos dados excluídos pelo autor: ${H.H2.reinc.map(l => `${l.rotulo.replace(/^reincluindo /, "reincluir ")} leva o ${un} a R$ ${br(l.vu * conv)} (${pct(l.var)})`).join("; ")}.`,
+      pedido: ids.length ? `Justificar a exclusão ${ids.length > 1 ? "dos dados" : "do dado"} ${dados(ids)} ou refazer o modelo com ${ids.length > 1 ? "eles" : "ele"}. Com estes dados, os modelos válidos sustentam ${un} de R$ ${br(faixa.p10)} a R$ ${br(faixa.p90)}${aBase && emVU ? ` (total de R$ ${br(faixa.p10 * aBase, 0)} a R$ ${br(faixa.p90 * aBase, 0)})` : ""}.` : `Justificar as exclusões do modelo do laudo.`,
+      ev: [...evFaixa(faixa), ...evExcl(H.H2)], faixa: true });
+  } else {
+    if (H.H1) {
+      const largo = H.H5 && H.H5.forte;
+      add({ cod: largo ? "H1+H5" : "H1", hs: largo ? ["H1", "H5"] : ["H1"], forte: true, efeito: Math.abs(faixa.med / va - 1),
+        titulo: largo ? "Valor extremo numa amostra que não determina o valor" : `Valor ${faixa.pos === "acima" ? "acima" : "abaixo"} dos modelos igualmente válidos`,
+        resumo: `${posTxt(faixa)[0].toUpperCase()}${posTxt(faixa).slice(1)}, ${fxTxt(faixa)}.` + (largo ? " Entre muitos modelos possíveis, o adotado é um dos de valor mais extremo." : " Há modelos tão bons quanto o do laudo com valor mais central."),
+        pedido: largo ? "Justificar a escolha do modelo frente aos demais e ampliar a amostra (dados mais parecidos com o avaliando)." : `Justificar por que o modelo adotado dá valor na ponta ${faixa.pos === "acima" ? "de cima" : "de baixo"} da faixa sustentada pelos dados.`,
+        ev: evFaixa(faixa), faixa: true });
+    }
+    if (H.H2) {
+      const ids = idsReinc(H.H2);
+      add({ cod: "H2", hs: ["H2"], forte: true, efeito: efExcl(H.H2), titulo: "O valor depende das exclusões",
+        resumo: H.H2.reinc.length ? `${H.H2.reinc.map(l => `${l.rotulo[0].toUpperCase()}${l.rotulo.slice(1)}, o ${un} muda ${pct(l.var)}`).join("; ")}.` : `${H.H2.soComExcl.map(x => x.v).join(", ")} só é significante com os dados excluídos pelo autor.`,
+        pedido: ids.length ? `Justificar a exclusão ${ids.length > 1 ? "dos dados" : "do dado"} ${dados(ids)} ou refazer o modelo com ${ids.length > 1 ? "eles" : "ele"}.` : "Justificar as exclusões de dados do modelo do laudo.",
+        ev: evExcl(H.H2) });
+    }
+    if (H.H5 && !H.H1) add({ cod: "H5", hs: ["H5"], forte: H.H5.forte, efeito: faixa.amp / 2,
+      titulo: H.H5.forte ? "A amostra não determina o valor" : "O valor depende moderadamente do modelo",
+      resumo: `Os ${br(faixa.n, 0)} modelos válidos com estes dados vão de R$ ${br(faixa.p10)} a R$ ${br(faixa.p90)} (P10 a P90): ${ampTxt(faixa)}. O laudo fica no miolo (percentil ${R.fixPy(faixa.pctl, 0)}), mas o valor depende da especificação escolhida.`,
+      pedido: "Ampliar a amostra ou trazer dados mais parecidos com o avaliando, para que o valor dependa menos da escolha do modelo.",
+      ev: evFaixa(faixa), faixa: true });
+  }
+
+  /* achados de antes que viram pedidos */
+  if (E.F && (ctx.base || ctx.areaObrig) && !F.modelo.some(s => s[0] === (ctx.base || ctx.areaObrig))) add({ cod: "BASE", forte: true, titulo: "Modelo sem a variável base",
+    resumo: `O modelo não tem ${ctx.base || ctx.areaObrig}, a área que converte o valor unitário em total; sem ela, o valor não responde ao tamanho do imóvel.`,
+    pedido: `Incluir ${ctx.base || ctx.areaObrig} no modelo.`, ev: [] });
+  const om = o.omitidas || [];
+  if (om.length) add({ cod: "OMIT", forte: true, efeito: Math.max(...om.map(x => Math.abs(x.efeito))), titulo: om.length > 1 ? "Variáveis relevantes fora do modelo" : `${om[0].variavel} relevante e fora do modelo`,
+    resumo: om.map(x => `${x.variavel} [${R.NOME_X[x.transf]}] entra com significância ${br(x.sig * 100)}% e muda o ${un} em ${pct(x.efeito)}`).join("; ") + ".",
+    pedido: `Incluir ${om.map(x => x.variavel).join(" e ")} no modelo ou justificar por que ${om.length > 1 ? "ficaram" : "ficou"} fora.`, ev: [] });
+  const sc = o.coer.filter(x => x.classe === "a confirmar");
+  if (sc.length) add({ cod: "SINAL", forte: true, efeito: Math.max(...sc.map(x => Math.abs(x.impacto))), titulo: "Sinal a confirmar",
+    resumo: sc.map(x => `${x.variavel}: efeito ${pct(x.efeito)} no ${un}, contrário ao esperado (${x.origem}); retirar muda o ${un} em ${pct(x.impacto, 1, false)}`).join("; ") + ".",
+    pedido: `Confirmar no laudo o efeito esperado de ${sc.map(x => x.variavel).join(" e ")}; se o laudo disser o contrário do modelo, é impedimento.`, ev: [] });
+  const aud = E.aud || [], audE = aud.filter(a => a.classe === "erro"), audV = aud.filter(a => a.classe === "verificar");
+  if (audE.length) add({ cod: "DADOS", forte: true, titulo: "Dados com provável erro de digitação",
+    resumo: audE.map(a => `${dado(a.id)}: ${a.txt}`).join("; ") + ".", pedido: `Corrigir ${audE.length > 1 ? "os dados" : "o dado"} ${dados([...new Set(audE.map(a => a.id))])}; sem a correção, não devem ser usados.`, ev: [] });
+
+  /* H3 e H4 */
+  if (H.H3) add({ cod: "H3", hs: ["H3"], forte: H.H3.forte, efeito: viz ? Math.abs(viz.dif) : null, titulo: "Qualidade do modelo menor do que parece",
+    resumo: `${H.H3.sinais.map(s => s.txt).join("; ")}.`.replace(/^./, c => c.toUpperCase()),
+    pedido: [
+      H.H3.sinais.some(s => s.cod === "r2vu") ? "testar outras características do imóvel além da área (ex.: área de terreno, idade, conservação)" : "",
+      H.H3.sinais.some(s => s.cod === "precisao") ? "apresentar a precisão pelo erro de previsão, não só pelo IC 80%" : "",
+      H.H3.sinais.some(s => s.cod === "viz" || s.cod === "alav") ? "justificar o valor frente aos dados mais parecidos com o avaliando" : ""
+    ].filter(Boolean).join("; ").replace(/^./, c => c.toUpperCase()) + ".",
+    ev: H.H3.sinais.map(s => s.txt[0].toUpperCase() + s.txt.slice(1)) });
+  if (H.H4) add({ cod: "H4", hs: ["H4"], forte: true, titulo: "Faltam informações da pesquisa",
+    resumo: `O arquivo só tem as ${H.H4.nVars} variáveis do modelo${H.H4.semDesab ? " e nenhum dado desabilitado" : ""}: não há como testar se outra característica do imóvel explica melhor o valor.`,
+    pedido: "Enviar a planilha completa da pesquisa, com todas as características levantadas e todos os dados (inclusive os descartados).",
+    ev: [`Variáveis no arquivo: ${F.modelo.map(s => s[0]).join(", ")}`, "Nenhuma ferramenta testa uma variável que não está no arquivo."] });
+
+  /* sinais fracos (ressalvas) */
+  const fracos = [];
+  o.coer.filter(x => x.classe === "fragilidade").forEach(x => fracos.push(`sinal incoerente em ${x.variavel} com impacto pequeno (${pct(x.impacto, 1, false)})`));
+  audV.forEach(a => fracos.push(`${dado(a.id)} a verificar na fonte: ${a.txt}`));
+
+  /* ordem: impedimentos e reprodução; depois os fortes por efeito no valor; os sem efeito medido no fim */
+  const ef = p => Number.isFinite(p.efeito) ? p.efeito : -1;
+  P.sort((a, b) => (b.forte - a.forte) || ((a.ordem ?? 9) - (b.ordem ?? 9)) || (ef(b) - ef(a)));
+  const fortes = P.filter(p => p.forte), fracosP = P.filter(p => !p.forte);
+  const pedidos = fortes.slice(0, RG.max_pedidos), outros = fortes.slice(RG.max_pedidos);
+  fracosP.forEach(p => fracos.unshift(`${p.titulo.toLowerCase()}: ${p.resumo.replace(/\.$/, "")}`));
+
+  /* veredito */
+  let veredito, cls;
+  const soComplemento = pedidos.length && pedidos.every(p => p.cod === "H3" || p.cod === "H4");
+  if (imps.length) { veredito = ops.length ? "Pedir ajustes" : "Recusar"; cls = ops.length ? "w" : "e"; }
+  else if (pedidos.length && !soComplemento) { veredito = "Pedir ajustes"; cls = "w"; }
+  else if (soComplemento) { veredito = "Pedir complementação"; cls = "i"; }
+  else if (fracos.length) { veredito = "Aceitar com ressalvas"; cls = "ok"; }
+  else { veredito = "Aceitar"; cls = "ok"; }
+  const frase = veredito === "Aceitar" ? `Nada a pedir: o modelo do laudo se sustenta frente aos alternativos${faixa ? ` e o valor fica no miolo dos ${br(faixa.n, 0)} modelos válidos (percentil ${R.fixPy(faixa.pctl, 0)})` : ""}.`
+    : veredito === "Aceitar com ressalvas" ? `Sem pedido forte; ${fracos.length} ressalva(s) para registrar.`
+    : veredito === "Recusar" ? `O modelo do laudo tem impedimento e nenhum modelo com estes dados atende ao Grau ${R.ROMANO[ctx.grau]} declarado.`
+    : `${pedidos.length} pedido${pedidos.length > 1 ? "s" : ""} ao avaliador: ${pedidos.map(p => p.titulo.toLowerCase()).join("; ")}.`;
+  return { veredito, cls, frase, pedidos, outros, fracos, H, faixa, viz, r2vu, un, conv, aBase, baseMod, va, emVU };
+}
+
+/* ---------- relatório .txt: seção 0 (Conclusão), achados novos (seção 4) e seção 8 (Dependência do modelo) ---------- */
+function raConclusaoTxt(Z) {
+  const L = ["## 0. CONCLUSÃO", `Veredito: ${Z.veredito.toUpperCase()} — ${Z.frase}`];
+  if (Z.pedidos.length) {
+    L.push("Pedidos ao avaliador (por ordem de efeito no valor):");
+    Z.pedidos.forEach((p, i) => { L.push(`P${i + 1} — ${p.titulo}${p.hs ? ` [${p.hs.join(" + ")}]` : ""}. ${p.resumo} Pedido: ${p.pedido}`); p.ev.forEach(e => L.push(`  - ${e}`)); });
+  } else L.push("Pedidos ao avaliador: nenhum.");
+  if (Z.outros.length) L.push(`Outros pontos (além dos ${RA.REGRAS.max_pedidos} pedidos): ${Z.outros.map(p => p.titulo.toLowerCase()).join("; ")}.`);
+  if (Z.fracos.length) L.push(`Ressalvas (sinais fracos): ${Z.fracos.join("; ")}.`);
+  L.push("Regra: os sinais (impedimentos, alternativo melhor, faixa dos modelos válidos, exclusões, qualidade aparente, informação faltando) são juntados em hipóteses; hipóteses com a mesma causa viram um pedido só; no máximo 5 pedidos. Veredito: impedimento → Pedir ajustes (Recusar se nenhum alternativo atende); pedido forte → Pedir ajustes; só qualidade aparente ou informação faltando → Pedir complementação; só sinais fracos → Aceitar com ressalvas.");
+  L.push("");
+  return L;
+}
+function raDependenciaTxt(E, Z) {
+  const R = RA, br = R.br, pct = R.pct, f = Z.faixa, L = ["", "## 8. DEPENDÊNCIA DO MODELO"];
+  if (!f) { L.push(`Só ${E.candidatos.length} modelo(s) válido(s): faixa não calculada (mínimo ${R.REGRAS.dep_min_modelos}).`); return L; }
+  L.push(`Todos os modelos válidos (${br(f.n, 0)}; cada combinação de variáveis, transformações, dependente e versão dos dados que passa nos filtros conta uma vez): ${Z.un} P10 R$ ${br(f.p10)}; mediana R$ ${br(f.med)}; P90 R$ ${br(f.p90)}; mínimo R$ ${br(f.min)}; máximo R$ ${br(f.max)}.`);
+  L.push(`Amplitude do espectro (P90 − P10) ÷ mediana = ${pct(f.amp, 1, false)}: ${f.larg} (até ${pct(R.REGRAS.dep_amp_mod, 0, false)} estreito; até ${pct(R.REGRAS.dep_amp_largo, 0, false)} moderado; acima, largo).`);
+  L.push(`Posição do laudo (R$ ${br(Z.va)}): percentil ${R.fixPy(f.pctl, 0)} — ${f.pos === "miolo" ? "entre P10 e P90 (coerente)" : `${f.pos} de P${f.pos === "acima" ? R.REGRAS.dep_pctl[1] : R.REGRAS.dep_pctl[0]}${f.foraTudo ? `, ${f.pos} de todos os modelos válidos` : ""} (achado)`}${f.op1 ? `; opção 1 (R$ ${br(f.op1.vu)}) no percentil ${R.fixPy(f.op1.pctl, 0)}` : ""}.`);
+  if (Z.aBase && Z.emVU) L.push(`Em valor total (× ${Z.baseMod} = ${br(Z.aBase)}): faixa P10–P90 R$ ${br(f.p10 * Z.aBase, 0)} a R$ ${br(f.p90 * Z.aBase, 0)}; mediana R$ ${br(f.med * Z.aBase, 0)}; laudo R$ ${br(Z.va * Z.aBase, 0)}.`);
+  if (f.porVersao.length > 1) L.push(`Por versão dos dados (mediana do ${Z.un}): ${f.porVersao.map(x => `${x.rot} R$ ${br(x.med)} (${x.n} modelos)`).join("; ")}.`);
+  if (f.comp) L.push(`Informativo — competitivos (erro fora da amostra até ${br(f.comp.tol, 2)} × o do melhor): ${br(f.comp.n, 0)} modelos; P10 R$ ${br(f.comp.p10)}; mediana R$ ${br(f.comp.med)}; P90 R$ ${br(f.comp.p90)}; laudo no percentil ${R.fixPy(f.comp.pctl, 0)}. A posição do laudo usa todos os válidos: a tolerância em relação ao melhor favorece o laudo quando ele é o próprio melhor.`);
+  if (Z.viz) L.push(`Âncora: mediana dos ${Z.viz.k} dados mais parecidos com o avaliando R$ ${br(Z.viz.med)} (laudo ${pct(Z.viz.dif)}).`);
+  const e0 = E.estab && E.estab[0] && E.estab[0].r;
+  if (e0) L.push(`Lado a lado: a estabilidade (reamostragem dos dados) mede a incerteza dos dados — laudo P10–P90 ${pct(e0.amp, 1, false)} da mediana; o espectro acima mede a incerteza da escolha do modelo — ${pct(f.amp, 1, false)}.`);
+  L.push("Limitação: em cada etapa da busca, só os 300 primeiros por R² ajustado são avaliados, e a faixa não passa pelo teste de variável omitida (feito só nas opções).");
+  return L;
+}
+function raAchadosNovos(E, Z) {
+  const R = RA, br = R.br, pct = R.pct, out = [], H = Z.H, f = Z.faixa;
+  if (H.H1) out.push(`Valor no extremo dos modelos válidos: o laudo (R$ ${br(Z.va)}) fica no percentil ${R.fixPy(f.pctl, 0)} dos ${br(f.n, 0)} modelos válidos${f.foraTudo ? `, ${f.pos} de todos eles` : ""} (P10–P90 R$ ${br(f.p10)} a R$ ${br(f.p90)}; espectro ${f.larg}, ${pct(f.amp, 1, false)}) — pedir ao autor a justificativa da escolha do modelo (ver seções 0 e 8)`);
+  if (H.H5) out.push(`O valor depende da escolha do modelo: espectro ${f.larg} (P90 − P10 = ${pct(f.amp, 1, false)} da mediana) — ${H.H5.forte ? "pedir amostra mais representativa ou dados mais parecidos com o avaliando" : "registrar a fragilidade"}`);
+  if (H.H2) H.H2.soComExcl.forEach(x => out.push(`${x.v} é significante só com as exclusões do autor (${br(x.com * 100)}% com elas; ${br(x.sem * 100)}% com todos os dados) — pedir ao autor a justificativa das exclusões`));
+  if (H.H3) H.H3.sinais.filter(s => s.cod === "r2vu" || s.cod === "precisao" || (s.cod === "viz" && !(E.viz && E.viz.achado))).forEach(s => out.push(`${s.txt[0].toUpperCase()}${s.txt.slice(1)} — ${s.cod === "r2vu" ? "pedir ao autor que teste outras características além da área" : s.cod === "precisao" ? "a precisão declarada não se confirma na previsão" : "pedir ao autor que explique a diferença para os dados mais parecidos"}`));
+  if (H.H4) out.push(`O arquivo só tem as variáveis do modelo${H.H4.semDesab ? " e nenhum dado desabilitado" : ""}: não há como testar variável omitida — pedir a planilha completa da pesquisa (todas as características levantadas e todos os dados)`);
+  return out;
+}
+const raRelatorio1350 = raRelatorio;
+raRelatorio = function (E, meta) {
+  let txt = raRelatorio1350(E, meta);
+  let Z; try { Z = raSintese(E, txt); } catch (e) { console.error(e); E.sint = { erro: e.message }; return txt; }
+  E.sint = Z;
+  const L = txt.split("\n");
+  /* achados novos no fim da seção 4 */
+  const novos = raAchadosNovos(E, Z);
+  if (novos.length) {
+    const i4 = L.findIndex(l => l.startsWith("## 4.")), i5 = L.findIndex(l => l.startsWith("## 5."));
+    if (i4 >= 0) {
+      let j = i4 + 1, nAch = 0; while (j < L.length && (L[j].startsWith("ACH-") || L[j] === "nenhum")) { const m = L[j].match(/^ACH-(\d+)/); if (m) nAch = Math.max(nAch, +m[1]); j++; }
+      const nenhum = L[i4 + 1] === "nenhum";
+      const ls = novos.map((t, k) => `ACH-${nAch + k + 1} — ${t}`);
+      if (nenhum) L.splice(i4 + 1, 1, ...ls); else L.splice(j, 0, ...ls);
+    }
+  }
+  /* seção 6: a faixa vai para a seção 8 */
+  const iF = L.findIndex(l => l.startsWith("Faixa dos modelos válidos (combinação") || /^Só \d+ modelo\(s\) válido\(s\) distinto\(s\): faixa não calculada\.$/.test(l));
+  if (iF >= 0) { const dois = L[iF].startsWith("Faixa") && L[iF + 1] && L[iF + 1].startsWith("Posição: laudo"); L.splice(iF, dois ? 2 : 1, "Faixa dos modelos válidos: ver a seção 8 (Dependência do modelo)."); }
+  /* seção 8 no fim; seção 0 no topo */
+  L.push(...raDependenciaTxt(E, Z).filter((x, k) => k > 0 || L[L.length - 1] !== ""));
+  const i0 = L.findIndex(l => l.startsWith("## 0.") || l.startsWith("## 1."));
+  if (i0 >= 0) L.splice(i0, 0, ...raConclusaoTxt(Z));
+  return L.join("\n").replace(/\n*$/, "\n");
+};
+
+/* ---------- 4. tela: cartão "Conclusão" no topo; o resto em "Detalhes" ---------- */
+function raFaixaSvg(Z, E) {
+  const f = Z.faixa; if (!f) return "";
+  const marcas = [{ rot: E.atual ? "Modelo atual" : "Laudo", v: Z.va, cls: "lau" }];
+  if (f.op1) marcas.push({ rot: "Opção 1", v: f.op1.vu, cls: "op" });
+  if (Z.viz) marcas.push({ rot: "Vizinhos", v: Z.viz.med, cls: "viz" });
+  const vs = [f.min, f.max, ...marcas.map(m => m.v)].filter(Number.isFinite); let lo = Math.min(...vs), hi = Math.max(...vs); const pd = (hi - lo) * 0.06 || lo * 0.05 || 1; lo -= pd; hi += pd;
+  const W = 680, x = v => 14 + (v - lo) / (hi - lo) * (W - 28), y = 52;
+  const pts = f.vals.map(v => `<circle cx="${x(v).toFixed(1)}" cy="${y + 24}" r="1.6" class="raf-pt"/>`).join("");
+  const mk = marcas.map((m, i) => `<g class="raf-${m.cls}"><line x1="${x(m.v).toFixed(1)}" x2="${x(m.v).toFixed(1)}" y1="${y - 24}" y2="${y + 14}"/><text x="${x(m.v).toFixed(1)}" y="${y - 28 - (i % 2) * 12}" text-anchor="middle">${esc(m.rot)} ${fmtNum(m.v, 0)}</text></g>`).join("");
+  return `<svg class="raf" viewBox="0 0 ${W} 104" role="img" aria-label="Faixa do valor nos modelos válidos">
+    <line x1="${x(f.min)}" x2="${x(f.max)}" y1="${y}" y2="${y}" class="raf-wh"/>
+    <rect x="${x(f.p10)}" y="${y - 10}" width="${Math.max(2, x(f.p90) - x(f.p10))}" height="20" rx="4" class="raf-box"/>
+    <line x1="${x(f.med)}" x2="${x(f.med)}" y1="${y - 10}" y2="${y + 10}" class="raf-med"/>
+    <text x="${x(f.min)}" y="${y + 44}" class="raf-ax">${fmtNum(f.min, 0)}</text><text x="${x(f.max)}" y="${y + 44}" text-anchor="end" class="raf-ax">${fmtNum(f.max, 0)}</text><text x="${x(f.med)}" y="${y + 44}" text-anchor="middle" class="raf-ax">mediana ${fmtNum(f.med, 0)}</text>
+    ${pts}${mk}</svg>`;
+}
+function raCartaoConclusao(E) {
+  const Z = E.sint; if (!Z || Z.erro) return Z && Z.erro ? `<div class="banner w"><span class="bi">!</span><div><b>Conclusão não calculada</b><span class="small">${esc(Z.erro)}</span></div><span></span></div>` : "";
+  const br = RA.br, pct = RA.pct, f = Z.faixa;
+  const ped = Z.pedidos.map((p, i) => `<li class="ra-ped">
+      <div class="ra-ped-h"><span class="ra-ped-n">${i + 1}</span><b>${esc(p.titulo)}</b>${Number.isFinite(p.efeito) && p.efeito > 0 && p.cod !== "H3" ? `<span class="chip n">efeito até ${pct(p.efeito, 1, false)} no valor</span>` : ""}</div>
+      <p class="ra-ped-r">${esc(p.resumo)}</p>
+      <p class="ra-ped-p"><span>Pedido:</span> ${esc(p.pedido)}${p.montar !== undefined ? ` <button class="btn btn-sm btn-primary" data-ra-montar="${p.montar}">Montar a opção 1 no modelo atual</button>` : ""}</p>
+      ${p.ev.length ? `<details class="ra-ev"><summary>ver evidências (${p.ev.length})</summary><ul>${p.ev.map(e => `<li>${esc(e)}</li>`).join("")}</ul>${p.faixa ? raFaixaSvg(Z, E) : ""}</details>` : ""}
+    </li>`).join("");
+  const dep = f ? `<div class="ra-dep"><span class="ra-dep-t">Dependência do modelo</span><span class="small">${br(f.n, 0)} modelos válidos · ${Z.un} P10–P90 R$ ${br(f.p10)} a R$ ${br(f.p90)} · espectro <b>${f.larg}</b> (${pct(f.amp, 1, false)}) · ${E.atual ? "modelo atual" : "laudo"} no <b>percentil ${RA.fixPy(f.pctl, 0)}</b></span></div>` : `<div class="ra-dep"><span class="ra-dep-t">Dependência do modelo</span><span class="small muted">faixa não calculada: só ${E.candidatos.length} modelo(s) válido(s)</span></div>`;
+  return `<div class="card card-in ra-conc ${Z.cls}">
+    <div class="ra-conc-h"><h3>Conclusão</h3><span class="ra-ver ${Z.cls}">${esc(Z.veredito)}</span></div>
+    <p class="ra-frase">${esc(Z.frase)}</p>
+    ${Z.pedidos.length ? `<ol class="ra-peds">${ped}</ol>` : ""}
+    ${Z.outros.length ? `<p class="small muted">Outros pontos: ${esc(Z.outros.map(p => p.titulo.toLowerCase()).join("; "))} (ver o relatório em Detalhes).</p>` : ""}
+    ${Z.fracos.length ? `<p class="small ra-ress"><b>Ressalvas:</b> ${esc(Z.fracos.join("; "))}.</p>` : ""}
+    ${dep}
+  </div>`;
+}
+const abaRA1350 = abaRA;
+abaRA = function () {
+  let h = abaRA1350();
+  h = h.replace("e grava o relatório (.txt) para o agente do Copilot.", "e monta o relatório (.txt) para o agente do Copilot, que fica disponível em Baixar.");
+  const E = S.ra.E;
+  if (!E || !S.ra.txt || S.ra.rodando || !E.sint) return h;
+  const i = h.indexOf('<div class="ra-tiles">'); if (i < 0 || !h.endsWith("</div>")) return h;
+  let corpo = h.slice(i, -6), aviso = "";
+  const av = corpo.match(/<div class="banner w"><span class="bi">!<\/span><div><b>O modelo mudou depois da revisão<\/b>[\s\S]*?<\/button><\/div>/);
+  if (av) { aviso = av[0]; corpo = corpo.replace(av[0], ""); }
+  const aberto = S.ra.detAberto || !!S.ra.montada;
+  return h.slice(0, i) + aviso + raCartaoConclusao(E) +
+    `<details class="ra-det" ${aberto ? "open" : ""}><summary>Detalhes: resumo, opções encontradas e relatório para o agente</summary><div class="ra-det-c">${corpo}</div></details></div>`;
+};
+document.addEventListener("toggle", e => { const t = e.target; if (t && t.classList && t.classList.contains("ra-det") && S.ra) S.ra.detAberto = t.open; }, true);
+
+/* "Montar no modelo atual": com a dependente em VT e sem base no motor, o relatório guarda a opção em VT; a conferência
+   do Módulo é em VU (VT ÷ base). Confere na mesma unidade, com a conversão da Conclusão. */
+const raMontar1350 = raMontar;
+raMontar = function (i) {
+  const E = S.ra.E, c = E && E.opcoes && E.opcoes[i], k = E && E.sint && E.sint.conv;
+  if (!c || !(k > 0) || k === 1) return raMontar1350(i);
+  const vu0 = c.vu; c.vu = vu0 * k;
+  try { return raMontar1350(i); } finally { c.vu = vu0; }
+};
+
+/* ---------- 5. o relatório não é baixado sozinho ---------- */
+const raRodar1350 = raRodar;
+raRodar = async function () {
+  if (S.ra) { S.ra.baixado = true; S.ra.semAviso1350 = true; }
+  try { return await raRodar1350(); } finally { if (S.ra) S.ra.semAviso1350 = false; }
+};
+const uiToast1350 = ui.toast;
+ui.toast = function (msg, tipo) {
+  if (S.ra && S.ra.semAviso1350 && msg === "Revisão automática concluída. Relatório gravado.") msg = "Revisão automática concluída. Para levar o relatório (.txt) ao agente, use Baixar relatório.";
+  return uiToast1350.call(ui, msg, tipo);
+};
+
+document.head.insertAdjacentHTML("beforeend", `<style>
+.ra-conc{border-left:5px solid var(--line)}
+.ra-conc.ok{border-left-color:var(--ok)}.ra-conc.w{border-left-color:var(--gold)}.ra-conc.e{border-left-color:var(--err)}.ra-conc.i{border-left-color:var(--info)}
+.ra-conc-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.ra-conc-h h3{margin:0}
+.ra-ver{font-weight:800;font-size:14px;padding:4px 12px;border-radius:999px;border:1px solid}
+.ra-ver.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}.ra-ver.w{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
+.ra-ver.e{background:var(--err-bg);color:var(--err);border-color:var(--err-line)}.ra-ver.i{background:var(--info-bg);color:var(--info);border-color:#bcd0ee}
+.ra-frase{margin:8px 0 10px;color:var(--ink-2)}
+.ra-peds{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.ra-ped{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card)}
+.ra-ped-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ra-ped-n{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--petrol);color:#fff;font-size:12px;font-weight:800;flex:none}
+.ra-ped-r{margin:6px 0 4px;font-size:13.5px;line-height:1.5}
+.ra-ped-p{margin:0;font-size:13.5px;line-height:1.5}.ra-ped-p>span{font-weight:700;color:var(--petrol)}
+.ra-ped-p .btn{margin-left:6px}
+.ra-ev{margin-top:6px}.ra-ev summary{cursor:pointer;font-size:12.5px;color:var(--petrol);font-weight:600}
+.ra-ev ul{margin:6px 0 0;padding-left:18px;font-size:12.5px;line-height:1.5;color:var(--ink-2)}
+.ra-ress{margin:10px 0 0;color:var(--ink-2)}
+.ra-dep{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
+.ra-dep-t{font-size:11px;font-weight:700;color:var(--ink-3);text-transform:uppercase;letter-spacing:.03em}
+.ra-det{border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.ra-det>summary{cursor:pointer;padding:12px 16px;font-weight:700;color:var(--ink-2)}
+.ra-det[open]>summary{border-bottom:1px solid var(--line)}
+.ra-det-c{display:grid;gap:14px;padding:14px}
+.raf{width:100%;max-width:680px;height:auto;display:block;margin:8px 0 2px}
+.raf-wh{stroke:var(--ink-3);stroke-width:1.5}.raf-box{fill:var(--info-bg);stroke:var(--info);stroke-width:1}.raf-med{stroke:var(--info);stroke-width:2}
+.raf-pt{fill:var(--ink-3);opacity:.35}.raf-ax{font-size:11px;fill:var(--ink-3)}
+.raf g line{stroke-width:2}.raf g text{font-size:11px;font-weight:700}
+.raf-lau line{stroke:var(--err)}.raf-lau text{fill:var(--err)}.raf-op line{stroke:var(--petrol);stroke-dasharray:4 3}.raf-op text{fill:var(--petrol)}
+.raf-viz line{stroke:var(--gold-d);stroke-dasharray:2 3}.raf-viz text{fill:var(--gold-d)}
+</style>`);
+
+const abrirAjuda1350 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1350();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.35.0:</b> a <b>Revisão automática</b> abre com o cartão <b>Conclusão</b>: um veredito (Aceitar, Aceitar com ressalvas, Pedir complementação, Pedir ajustes ou Recusar) e até 5 pedidos ao avaliador, cada um com as evidências. Os pedidos juntam os sinais com a mesma causa: valor do laudo no extremo dos modelos válidos (faixa de todos os modelos válidos, P10 a P90), valor que depende das exclusões, qualidade do modelo menor do que parece (R² em VU baixo, erro de previsão maior que o IC, distância dos dados mais parecidos) e informação faltando na pesquisa. O resumo, as opções e o relatório ficam em <b>Detalhes</b>; o relatório (.txt) traz a seção 0 (Conclusão) e a 8 (Dependência do modelo) e não é mais baixado sozinho: use <b>Baixar relatório</b>. Com mais de uma área, a <b>variável base</b> é escolhida pelo valor redondo (VU × área), depois pela descrição da dependente, com aviso.</p>`);
+};
+
+/* =====================================================================
+   v1.36.0 — Texto para o avaliador da Revisão automática e "Texto complementar" na Entrega
+   Decisões de 15/10/2026 (23h32 e 23h34) e 16/10/2026 (Revisao_automatica_decisoes.md; Dependencia_do_modelo_proposta.md):
+   - a Revisão automática gera um texto para o avaliador, complementar ao da Entrega, a partir do veredito e dos
+     pedidos do cartão "Conclusão" (v1.35.0). Não substitui o .txt do Copilot;
+   - quando gera: com pedidos ou ressalvas. Sem nada a pedir (veredito "Aceitar"), não há texto;
+   - na tela da Revisão automática, cartão "Texto complementar para o avaliador", editável, com Copiar e Refazer;
+   - na Entrega, a linha "Texto complementar:" com as caixas Contraprova | Revisão automática, independentes;
+     caixa desabilitada quando a ferramenta não tem texto; cada texto entra com o título da origem na Entrega e
+     no relatório (.docx e PDF).
+   Só acrescenta código: invólucros que chamam a versão anterior.
+   ===================================================================== */
+
+/* ---------- 1. o texto ---------- */
+function raTextoAvaliador(E) {
+  const Z = E && E.sint; if (!Z || Z.erro) return "";
+  if (!Z.pedidos.length && !Z.fracos.length) return "";
+  const I = (typeof entEstado === "function" ? entEstado().ident : {}) || {};
+  const lp0 = typeof laudoPadrao === "function" ? laudoPadrao() : "", lp = I.laudo || (/^laudo\s/i.test(lp0) ? lp0 : "");
+  const arq = String((E.F && E.F.arquivo) || "").replace(/ \(modelo atual\)$/, "");
+  const doLaudo = lp ? `do ${/^laudo/i.test(lp) ? lp.replace(/^Laudo/, "laudo") : `laudo ${lp}`}` : arq ? `do laudo (arquivo ${arq})` : "do laudo";
+  const f = Z.faixa, nM = f ? `${RA.br(f.n, 0)} modelos válidos` : "os modelos alternativos válidos";
+  const abre = `Na revisão automática do modelo de regressão ${doLaudo}, o modelo foi refeito a partir do arquivo entregue e comparado com ${nM} montados com os mesmos dados (todas as combinações de variáveis, transformações e exclusões que atendem aos mesmos critérios da NBR 14653-2), além da auditoria dos dados e das exclusões.`;
+  const pede = { "Pedir ajustes": "Pedimos ajustes ou esclarecimentos sobre os pontos abaixo.", "Pedir complementação": "Pedimos a complementação abaixo.", "Recusar": "O modelo não pode ser aceito como está, pelos pontos abaixo.", "Aceitar com ressalvas": "Não há ajuste a pedir; registramos os pontos abaixo." }[Z.veredito] || "";
+  const L = [abre + (pede ? " " + pede : "")];
+  Z.pedidos.forEach((p, i) => L.push(`${i + 1}. ${p.titulo}. ${p.resumo} ${p.pedido}`));
+  if (Z.outros.length) L.push(`Também merecem atenção: ${Z.outros.map(p => p.titulo.toLowerCase()).join("; ")}.`);
+  if (Z.fracos.length) L.push(`${Z.pedidos.length ? "Registramos ainda, sem necessidade de ajuste" : "Pontos registrados"}: ${Z.fracos.join("; ")}.`);
+  return L.join("\n\n").replace(/excluídos pelo autor/g, "excluídos do modelo").replace(/pelo autor/g, "no laudo").replace(/do autor/g, "do laudo");
+}
+function raTx() { if (!S.ra.tx) S.ra.tx = { texto: "", editado: false, incluir: true }; return S.ra.tx; }
+function raTextoAtual() { const T = raTx(); if (!S.ra.E) return ""; return T.editado && T.texto ? T.texto : raTextoAvaliador(S.ra.E); }
+
+/* nova revisão: o texto volta a ser gerado, salvo se foi editado à mão (fica com aviso) */
+const raRodar1360 = raRodar;
+raRodar = async function () {
+  const antes = S.ra.E;
+  const r = await raRodar1360();
+  if (S.ra.E && S.ra.E !== antes) { const T = raTx(); if (T.editado) T.velho = true; else T.texto = ""; }
+  return r;
+};
+
+/* ---------- 2. tela da Revisão automática: cartão do texto, depois da Conclusão ---------- */
+function raCartaoTexto() {
+  const E = S.ra.E; if (!E || !E.sint || E.sint.erro) return "";
+  const T = raTx(), txt = raTextoAtual();
+  if (!txt) return `<div class="card card-in ra-txav"><h3>Texto complementar para o avaliador</h3><p class="small muted" style="margin:0">Sem texto: nada a pedir ao avaliador (veredito “Aceitar”).</p></div>`;
+  return `<div class="card card-in ra-txav"><h3>Texto complementar para o avaliador <span class="small muted">(entra na Entrega e no relatório, depois do texto do tom escolhido)</span></h3>
+    ${T.velho ? `<div class="banner w"><span class="bi">!</span><div><b>Texto editado antes da última revisão</b><span class="small">Os pedidos podem ter mudado. “Refazer” gera o texto a partir da revisão atual.</span></div><span></span></div>` : ""}
+    <textarea class="inp ctp4-ta" data-ra-texto rows="14" spellcheck="true" aria-label="Texto complementar da Revisão automática">${esc(txt)}</textarea>
+    <div class="ctp4-bar"><label class="chk small"><input type="checkbox" data-ra-incluir ${T.incluir ? "checked" : ""}> Incluir na Entrega e no relatório</label><span class="sp"></span>${T.editado ? `<span class="chip w">editado</span><button class="btn btn-sm" data-ra-tx="refazer">Refazer pela revisão</button>` : `<span class="small muted">Gerado pelos pedidos da Conclusão; editável.</span>`}<button class="btn btn-sm" data-ra-tx="copiar">Copiar</button><button class="btn btn-sm" data-aba-ir="entrega">Ir para a Entrega</button></div></div>`;
+}
+const abaRA1360 = abaRA;
+abaRA = function () {
+  const h = abaRA1360();
+  if (!S.ra.E || !S.ra.txt || S.ra.rodando || !S.ra.E.sint) return h;
+  const i = h.indexOf('<details class="ra-det"'); if (i < 0) return h;
+  return h.slice(0, i) + raCartaoTexto() + h.slice(i);
+};
+document.addEventListener("input", e => {
+  const t = e.target; if (!t || !t.dataset || t.dataset.raTexto === undefined) return;
+  const T = raTx(); T.texto = t.value; T.editado = true; T.velho = false; sessaoSuja = true;
+});
+document.addEventListener("change", e => {
+  const t = e.target; if (!t || !t.dataset) return;
+  if (t.dataset.raIncluir !== undefined) { raTx().incluir = t.checked; sessaoSuja = true; }
+});
+document.addEventListener("click", async e => {
+  const t = e.target.closest && e.target.closest("[data-ra-tx],[data-aba-ir]"); if (!t) return;
+  if (t.dataset.abaIr) { S.aba = t.dataset.abaIr; S.tela = "explorar"; desenhar(false); window.scrollTo(0, 0); return; }
+  const a = t.dataset.raTx;
+  if (a === "refazer") { const T = raTx(); T.texto = ""; T.editado = false; T.velho = false; const y = window.scrollY; desenhar(false); window.scrollTo(0, y); return; }
+  if (a === "copiar") { const txt = raTextoAtual(); try { await navigator.clipboard.writeText(txt); ui.toast("Texto copiado."); } catch (err) { ui.toast("Não foi possível copiar: selecione o texto e copie.", "e"); } }
+});
+
+/* ---------- 3. Entrega: linha "Texto complementar" e cartão da Revisão automática ---------- */
+function compStatus() {
+  const temCtp = !!(S.ctp3 && S.ctp3.res && typeof ctp4TextoAtual === "function" && ctp4TextoAtual());
+  const temRa = !!raTextoAtual();
+  return { temCtp, temRa, ctp: temCtp && !!(S.ctp3.dec && S.ctp3.dec.incluir), ra: temRa && raTx().incluir };
+}
+function linhaComplementar() {
+  const C = compStatus();
+  const cx = (k, rot, tem, on, motivo) => `<label class="ent-comp-l ${tem ? "" : "dis"}" title="${tem ? "" : esc(motivo)}"><input type="checkbox" data-ent-comp="${k}" ${on ? "checked" : ""} ${tem ? "" : "disabled"}> ${rot}${tem ? "" : ` <span class="small muted">(${esc(motivo)})</span>`}</label>`;
+  const raMot = !S.ra.E ? "não rodou" : "nada a pedir";
+  return `<div class="ent-comp" role="group" aria-label="Texto complementar"><b>Texto complementar:</b>${cx("ctp", "Contraprova", C.temCtp, C.ctp, "não rodou")}${cx("ra", "Revisão automática", C.temRa, C.ra, raMot)}</div>`;
+}
+function raCartaoEntrega() {
+  const el = $("#aba-conteudo"); if (!el || $(".ra-ent", el)) return;
+  const tc = $(".ent-texto", el); if (!tc) return;
+  const h3 = $("h3", tc); if (h3 && !$(".ent-comp", tc)) h3.insertAdjacentHTML("afterend", linhaComplementar());
+  const C = compStatus(); if (!C.ra) return;
+  const alvo = $(".ctp4-ent", el) || tc;
+  const velho = S.ra.assin && raAssin(raEntrada()) !== S.ra.assin;
+  alvo.insertAdjacentHTML("afterend", `<div class="card card-in ra-ent"><h3>Texto complementar da Revisão automática<span class="sp"></span><button class="btn btn-sm" data-aba-ir="ra">Editar na Revisão automática</button></h3>
+    ${velho ? `<p class="small" style="margin:0 0 6px;color:var(--warn)">A revisão automática é do modelo de antes da última mudança; rode de novo se quiser o texto do modelo atual.</p>` : ""}
+    <div class="ctp4-pre">${esc(raTextoAtual())}</div><p class="small muted" style="margin:6px 0 0">Vai no relatório (.docx e PDF) depois do texto do tom escolhido${C.ctp ? " e do texto da Contraprova" : ""}.</p></div>`);
+}
+const desenharAbas1360 = desenharAbas;
+desenharAbas = function () {
+  const r = desenharAbas1360.apply(this, arguments);
+  if (S.aba === "entrega") { try { raCartaoEntrega(); } catch (e) { console.warn(e); } }
+  return r;
+};
+document.addEventListener("change", e => {
+  const t = e.target; if (!t || !t.dataset || t.dataset.entComp === undefined) return;
+  if (t.dataset.entComp === "ctp" && S.ctp3 && S.ctp3.res) ctp4Dec().incluir = t.checked;
+  if (t.dataset.entComp === "ra") raTx().incluir = t.checked;
+  sessaoSuja = true; const y = window.scrollY; desenhar(false); window.scrollTo(0, y);
+});
+
+/* ---------- 4. relatório (.docx e PDF): anexo da Revisão automática ---------- */
+const relatorioBlocos1360 = relatorioBlocos;
+relatorioBlocos = function () {
+  const out = relatorioBlocos1360();
+  if (!compStatus().ra) return out;
+  const T = raTextoAtual(); if (!T) return out;
+  let j = out.length - 1; while (j > 0 && !(out[j].t === "p" && /Gerado por Inferência/.test(out[j].x))) j--; if (j <= 0) j = out.length;
+  const Z = S.ra.E.sint;
+  out.splice(j, 0, { t: "h1", x: "Anexo. Revisão automática: texto complementar para o avaliador" }, { t: "p", x: `Veredito da revisão automática: ${Z.veredito}.` }, { t: "texto", x: T });
+  return out;
+};
+
+/* ---------- 5. projeto: o texto (editado ou não) e a escolha de incluir ---------- */
+const estadoProjeto1360 = estadoProjeto;
+estadoProjeto = function (comHist) { const P = estadoProjeto1360(comHist); if (P && P.estado && S.ra && S.ra.tx) P.estado.raTx = { texto: S.ra.tx.editado ? S.ra.tx.texto : "", editado: !!S.ra.tx.editado, incluir: S.ra.tx.incluir !== false }; return P; };
+const restaurarProjeto1360 = restaurarProjeto;
+restaurarProjeto = function (P, rotulo) { const x = restaurarProjeto1360(P, rotulo); const t = P && P.estado && P.estado.raTx; if (t && S.ra) S.ra.tx = { texto: t.texto || "", editado: !!t.editado, incluir: t.incluir !== false, velho: !!t.editado }; return x; };
+
+document.head.insertAdjacentHTML("beforeend", `<style>
+.ent-comp{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:2px 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;font-size:13.5px}
+.ent-comp-l{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.ent-comp-l.dis{color:var(--ink-3);cursor:default}
+.ra-ent h3{display:flex;align-items:center;gap:8px}.ra-ent h3 .sp{flex:1}
+.ra-txav .ctp4-bar .sp{flex:1}
+</style>`);
+
+const abrirAjuda1360 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1360();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.36.0:</b> a <b>Revisão automática</b> gera um <b>texto complementar para o avaliador</b> a partir do veredito e dos pedidos da Conclusão (editável, com Copiar e Refazer). Sem nada a pedir, não há texto. Na <b>Entrega</b>, a linha <b>Texto complementar</b> tem as caixas Contraprova e Revisão automática, independentes; cada texto aparece com a sua origem e entra no relatório (.docx e PDF) como anexo, depois do texto do tom escolhido.</p>`);
+};
+
+/* =====================================================================
+   v1.36.1 — Pendências decididas (pauta §1) e dois defeitos de tela (16/10/2026, 13h05)
+   1. Busca com a dependente trocada (VU ↔ VT): "Exigir sinais coerentes" confere a variável base na unidade em que o sinal
+      foi declarado, no motor (enumeração) e no detalhamento nos Workers, como a Análise faz desde a v1.33.1.
+      O motor (motorBusca) ganhou a conta em três linhas marcadas "v1.36.1"; o resto está aqui.
+   2. Rótulos: "resíduo padronizado (como no SisDEA)" (P1); "intervalo de confiança da estimativa central" no relatório e no
+      parecer (P4); R² ajustado do .sda "(calculado a partir do R² gravado)", com aviso quando algum b gravado é 0 (P6.4).
+   3. Micronumerosidade: o motivo escrito ao lado do grau "—" (P3).
+   4. "Definido antes da última mudança no modelo": valor adotado (F5) e texto para o avaliador editado à mão (F4).
+   5. Projeto .inferencia que não abre: mensagem clara, sem deixar a tela pela metade.
+   6. Revisão automática cortada à direita em telas mais estreitas (a grade se alargava com as equações longas).
+   7. Contraprova: a Referência (modelo recebido) na unidade da dependente atual quando ela foi trocada (VU ↔ VT).
+   Só acrescenta código, fora as três linhas do motor.
+   ===================================================================== */
+
+/* ---------- assinatura do modelo (F4/F5) ---------- */
+function assinModelo1361() {
+  if (!S.dados || !S.dep) return "";
+  const s = JSON.stringify([S.dep.col, S.dep.tr, (S.vars || []).map(v => [v.col, !!v.inc, v.tr]), S.dados.linhas.map(l => (l.ativo ? 1 : 0)).join(""), S.dadosVer || 0, S.dados.aval, S.crit]);
+  let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return s.length + ":" + h;
+}
+
+/* ---------- 1. Busca: sinal da variável base na unidade declarada ---------- */
+function baseChkBusca1361(R, op) {
+  const cfg = R.cfg, M = R.meta;
+  if (!op || !op.sinal || !S.lido || !S.lido.dep || typeof raDepTotal !== "function") return;
+  const base = (S.calcDep && S.calcDep.base) || S.base; if (!base) return;
+  const dec = raDepTotal(S.lido.dep.col), cur = raDepTotal(S.dep.col);
+  if (dec === null || cur === null || dec === cur) return;
+  const vb = M.vlist.findIndex(v => v.col === base); if (vb < 0) return;
+  const s = M.vlist[vb].sinal || 0, A = S.dados.aval[base]; if (!s || !(A > 0)) return;
+  const nc = M.X.length, isBase = new Uint8Array(nc), x0 = new Float64Array(nc), x1 = new Float64Array(nc);
+  for (let c = 0; c < nc; c++) {
+    const vv = M.vlist[M.colVar[c]], t = M.colT[c], av = S.dados.aval[vv.col];
+    x0[c] = Number.isFinite(av) && TX[t] ? TX[t].f(av) : NaN;
+    if (M.colVar[c] === vb) {
+      isBase[c] = 1; x1[c] = TX[t].f(1.1 * A);
+      /* sem o avaliando das outras variáveis (Y fora de ln), vale a condição necessária: VU "+" exige VT crescente; VT "−" exige VU decrescente */
+      cfg.colS[c] = (cur ? s > 0 : s < 0) ? s * TX[t].cresc : 0;
+    }
+  }
+  cfg.baseChk = { isBase, x0, x1, A, cur: !!cur, s };
+}
+const montarBusca1361 = montarBusca;
+montarBusca = function (op) {
+  const R = montarBusca1361.apply(this, arguments);
+  try { if (R && R.cfg && R.meta) baseChkBusca1361(R, op); } catch (e) { console.warn(e); }
+  return R;
+};
+/* detalhamento nos Workers: a mesma conta de efeitoNaUnidadeDeclarada (v1.33.1), com o que o Worker recebe em S */
+const WORKER_EFEITO_1361 = `
+function efeitoNaUnidadeDeclarada(r, m, j) {
+  const B = S && S.baseChk1361; if (!B || !m || !m.dep || !m.vars[j] || !r || r.erro) return null;
+  if (m.vars[j].col !== B.base || m.dep.col !== B.depCol) return null;
+  const a = S.dados.aval, x = a[B.base]; if (!(x > 0)) return null;
+  const x1 = x * 1.1, e0 = estimar(r, m, a), e1 = estimar(r, m, Object.assign({}, a, { [B.base]: x1 }));
+  if (!e0 || e0.erro || !e1 || e1.erro) return null;
+  const y0 = B.cur ? e0.central / x : e0.central * x, y1 = B.cur ? e1.central / x1 : e1.central * x1, d = y1 / y0 - 1;
+  if (!Number.isFinite(d)) return null;
+  return Math.abs(d) < 1e-9 ? 0 : Math.sign(d);
+}
+`;
+const fonteNucleoDetalhar1361 = fonteNucleoDetalhar;
+fonteNucleoDetalhar = function () { const f = fonteNucleoDetalhar1361(); const i = f.indexOf("self.onmessage"); return i < 0 ? f + WORKER_EFEITO_1361 : f.slice(0, i) + WORKER_EFEITO_1361 + f.slice(i); };
+const contextoDetalhar1361 = contextoDetalhar;
+contextoDetalhar = function (M, op, C) {
+  const ctx = contextoDetalhar1361.apply(this, arguments);
+  try {
+    const base = (S.calcDep && S.calcDep.base) || S.base;
+    if (base && S.lido && S.lido.dep && typeof raDepTotal === "function") {
+      const dec = raDepTotal(S.lido.dep.col), cur = raDepTotal(S.dep.col);
+      if (dec !== null && cur !== null && dec !== cur) ctx.S.baseChk1361 = { base, depCol: S.dep.col, cur: !!cur };
+    }
+  } catch (e) { console.warn(e); }
+  return ctx;
+};
+
+/* ---------- 2. rótulos ---------- */
+/* P1: glossário e balão do dado */
+try {
+  const g = GLOS.find(x => x[0] === "rp");
+  if (g) { g[2] = "Resíduo padronizado (como no SisDEA)"; g[3] = String(g[3]).replace(/\s*$/, "") + " É a mesma conta do SisDEA: o resíduo dividido pelo desvio-padrão do modelo (e ÷ s). O saneamento da Busca usa o resíduo studentizado, que tira o próprio dado do ajuste."; }
+} catch (e) { console.warn(e); }
+const abrirBalao1361 = abrirBalao;
+abrirBalao = function () {
+  const x = abrirBalao1361.apply(this, arguments);
+  const b = document.getElementById("balao");
+  if (b) b.querySelectorAll("th").forEach(th => { if (th.textContent === "Resíduo padronizado") th.innerHTML = 'Resíduo padronizado <span class="small muted">(como no SisDEA)</span>'; });
+  return x;
+};
+const abaResultado1361 = abaResultado;
+abaResultado = function () { const h = abaResultado1361.apply(this, arguments); return typeof h === "string" ? h.replace("<figcaption>Resíduos padronizados × estimado</figcaption>", "<figcaption>Resíduos padronizados (como no SisDEA) × estimado</figcaption>") : h; };
+
+/* P4: relatório (.docx/PDF) e parecer */
+const P4_1361 = s => typeof s !== "string" ? s : s
+  .replace(/intervalo de confiança de 80% de /g, "intervalo de confiança da estimativa central (80%) de ")
+  .replace(/^Amplitude do IC 80%$/, "Amplitude do intervalo de confiança da estimativa central (80%)");
+const relatorioBlocos1361 = relatorioBlocos;
+relatorioBlocos = function () {
+  const out = relatorioBlocos1361.apply(this, arguments);
+  out.forEach(b => {
+    if (b.t === "p" || b.t === "texto") b.x = P4_1361(b.x);
+    if (b.t === "tab" && b.linhas) b.linhas = b.linhas.map(l => l.map((c, j) => (j === 0 ? P4_1361(c) : c)));
+    if (b.t === "lista" && b.itens) b.itens.forEach(it => { if (it && typeof it.txt === "string") it.txt = P4_1361(it.txt); });
+  });
+  return out;
+};
+const textoAvaliador1361 = textoAvaliador;
+textoAvaliador = function () { return P4_1361(textoAvaliador1361.apply(this, arguments)); };
+
+/* P6.4: R² ajustado do .sda é calculado a partir do R² gravado; b gravado = 0 é variável descartada pelo SisDEA */
+const compararCom1361 = compararCom;
+compararCom = function (R) {
+  const out = compararCom1361.apply(this, arguments);
+  try {
+    if (!out || !R) return out;
+    const sda = /sisdea/i.test(String((S.externo && S.externo.programa) || "")) && (R === S.refArquivo || R === S.ref);
+    if (!sda) return out;
+    const it = out.itens.find(x => x.rot === "R² ajustado"); if (it) it.rot = "R² ajustado (calculado a partir do R² gravado)";
+    const zeros = R.coefs ? Object.keys(R.coefs).filter(k => k !== "__b0" && R.coefs[k] === 0) : [];
+    if (zeros.length) out.itens.push({ rot: "Coeficiente gravado = 0", a: zeros.map(nomeCurto).join(", "), b: "—", dif: "o SisDEA descartou a variável nesta equação; o R² ajustado calculado conta essa variável e pode não conferir", st: "dif", informativo: true });
+  } catch (e) { console.warn(e); }
+  return out;
+};
+
+/* ---------- 3. micronumerosidade: motivo ao lado do grau "—" ---------- */
+function motivoSemGrau1361() {
+  const f = S.fund; if (!f || f.grau !== "—" || !f.itens) return "";
+  const it = f.itens.filter(x => x.grau === "—"); if (!it.length) return "";
+  const parte = x => {
+    if (x.pf) { try { const F = microFalhas(S.r, modeloAtual()); if (F && F.length) return `micronumerosidade em ${F.map(z => nomeCurto(z.col)).join(", ")}`; } catch (e) { /* segue */ } return "micronumerosidade"; }
+    const t = String(x.item);
+    return /quantidade m[ií]nima|dados efetivamente/i.test(t) ? "dados insuficientes" : /regressores/i.test(t) ? "significância dos regressores" : /teste F|do modelo/i.test(t) ? "teste F" : /extrapola/i.test(t) ? "extrapolação" : t.toLowerCase();
+  };
+  return "sem enquadramento: " + it.map(parte).join("; ");
+}
+function marcarSemGrau1361() {
+  const mot = motivoSemGrau1361(); if (!mot) return;
+  document.querySelectorAll(".rs").forEach(rs => {
+    const k = rs.querySelector(".k"); if (!k || k.textContent.trim() !== "NBR 14653-2") return;
+    const s = rs.querySelector(".s"); if (s) { s.textContent = mot; s.classList.add("semgrau1361"); s.title = mot; }
+  });
+  const ac = document.getElementById("aba-conteudo"); if (!ac) return;
+  ac.querySelectorAll("tr").forEach(tr => {
+    const th = tr.querySelector("th,td"); if (!th || !/^Fundamentação \(itens estatísticos\)$/.test(th.textContent.trim()) || tr.querySelector(".semgrau1361")) return;
+    const ult = tr.lastElementChild; if (ult && /—/.test(ult.textContent)) ult.insertAdjacentHTML("beforeend", ` <span class="small semgrau1361">${esc(mot)}</span>`);
+  });
+}
+
+/* ---------- 4. F5 (valor adotado) e F4 (texto editado) ---------- */
+const adotarRegua1361 = adotarRegua;
+adotarRegua = function () { const x = adotarRegua1361.apply(this, arguments); if (S.arb && S.arb.adotado) S.arb.adotado.assin = assinModelo1361(); atualizarRegua(); return x; };
+const atualizarRegua1361 = atualizarRegua;
+atualizarRegua = function () {
+  const x = atualizarRegua1361.apply(this, arguments);
+  const a = S.arb && S.arb.adotado, el = document.getElementById("rg-adot");
+  if (el && a && a.pct && a.assin && a.assin !== assinModelo1361()) el.insertAdjacentHTML("beforeend", ` <span class="aviso1361">Definido antes da última mudança no modelo: confira se o percentual ainda vale.</span>`);
+  return x;
+};
+document.addEventListener("input", e => {
+  const t = e.target; if (!t || t.id !== "ent-ta" || !S.ent) return;
+  if (!S.ent.assinTx) S.ent.assinTx = {};
+  S.ent.assinTx[S.ent.tom] = assinModelo1361();
+}, true);
+function avisoTextoEntrega1361() {
+  const E = S.ent, ta = document.getElementById("ent-ta"); if (!E || !ta || document.querySelector(".aviso-tx1361")) return;
+  const a = E.editado && E.editado[E.tom] && E.assinTx && E.assinTx[E.tom];
+  if (a && a !== assinModelo1361()) ta.insertAdjacentHTML("beforebegin", `<p class="small aviso1361 aviso-tx1361" style="margin:0 0 6px">Texto editado antes da última mudança no modelo: confira, ou use “Refazer o texto” para gerá-lo de novo.</p>`);
+}
+
+/* ---------- 5. projeto que não abre: mensagem clara ---------- */
+const lerProjeto1361 = lerProjeto;
+lerProjeto = function (txt) {
+  try { return lerProjeto1361.apply(this, arguments); }
+  catch (e) {
+    if (e instanceof SyntaxError) throw new Error("O projeto está incompleto ou danificado: o arquivo .inferencia foi cortado ou alterado. Abra uma cópia íntegra do projeto, ou o arquivo do modelo (.sda ou .tsr) ou o laudo, e refaça a revisão.");
+    throw e;
+  }
+};
+function projetoValido1361(P) {
+  const E = P && P.estado; if (!E) return false;
+  const D = E.dados;
+  if (!D || !Array.isArray(D.cols) || !Array.isArray(D.linhas) || !D.linhas.length) return false;
+  if (!D.linhas.every(l => l && typeof l === "object" && l.v && typeof l.v === "object")) return false;
+  if (!E.dep || typeof E.dep.col !== "string" || !Array.isArray(E.vars) || !E.vars.every(v => v && typeof v.col === "string")) return false;
+  return true;
+}
+const restaurarProjeto1361 = restaurarProjeto;
+restaurarProjeto = function (P, rotulo) {
+  const versao = (P && P.app) ? `versão ${P.app}` : "uma versão antiga";
+  const msg = `Este projeto foi salvo pela ${versao} do Módulo e não pode ser aberto nesta versão (${INF_VERSAO}): o formato do projeto mudou. Abra o arquivo do modelo (.sda ou .tsr) ou o laudo e refaça a revisão.`;
+  if (!projetoValido1361(P)) throw new Error(msg);
+  let antes = null; try { if (S.dados && S.dep && S.dep.col) antes = estadoProjeto(true); } catch (e) { antes = null; }
+  try { return restaurarProjeto1361.apply(this, arguments); }
+  catch (e) {
+    console.error(e);
+    if (antes) { try { restaurarProjeto1361(antes, "Modelo anterior"); } catch (e2) { console.error(e2); } }
+    throw new Error(msg);
+  }
+};
+
+/* ---------- 6. Revisão automática: a grade não se alarga com as equações longas ---------- */
+/* ---------- 7. Contraprova: Referência na unidade da dependente atual ---------- */
+const ctpBase1361 = ctpBase;
+ctpBase = function (modo) {
+  const B = ctpBase1361.apply(this, arguments);
+  try {
+    if (!B || B.modo !== "rec" || !B.R || typeof fatorParaArquivo !== "function") return B;
+    const f = fatorParaArquivo(S.dep.col); if (!(f > 0) || f === 1) return B;
+    const k = 1 / f, R = B.R, cv = v => Number.isFinite(v) ? v * k : v;
+    const R2 = Object.assign(Object.create(Object.getPrototypeOf(R)), R, { central: cv(R.central), inf: cv(R.inf), sup: cv(R.sup), convertido1361: k });
+    if (R.e && typeof R.e === "object") R2.e = { ...R.e, central: cv(R.e.central), inf: cv(R.e.inf), sup: cv(R.e.sup), vals: R.e.vals ? Object.fromEntries(Object.entries(R.e.vals).map(([c, v]) => [c, cv(v)])) : R.e.vals };
+    const base = (S.calcDep && S.calcDep.base) || S.base, bv = base && S.dados.aval[base];
+    return { ...B, R: R2, rot: `${B.rot}, convertido para valor ${k > 1 ? "total (×" : "unitário (÷"} ${nomeCurto(base || "base")} ${fmtNum(bv, 2)})` };
+  } catch (e) { console.warn(e); return B; }
+};
+
+/* ---------- desenho: aplica 3 e 4 depois de cada tela ---------- */
+const desenhar1361 = desenhar;
+desenhar = function () {
+  const x = desenhar1361.apply(this, arguments);
+  try { marcarSemGrau1361(); if (S.aba === "entrega") avisoTextoEntrega1361(); } catch (e) { console.warn(e); }
+  return x;
+};
+const desenharResumo1361 = desenharResumo;
+desenharResumo = function () { const x = desenharResumo1361.apply(this, arguments); try { marcarSemGrau1361(); } catch (e) { console.warn(e); } return x; };
+
+document.head.insertAdjacentHTML("beforeend", `<style>
+.ra{grid-template-columns:minmax(0,1fr)}
+.ra>*{min-width:0}
+.ra-det-c{grid-template-columns:minmax(0,1fr)}
+.ra-det-c>*{min-width:0}
+.ra-topo>div:first-child{min-width:0}
+.ra-opc-eq{max-width:100%}
+.ra-opc-l{grid-template-columns:minmax(0,1fr)}
+.ra-opc-l>*{min-width:0}
+.ra-peds>li{min-width:0}
+.semgrau1361{color:var(--err)!important;font-weight:600}
+.aviso1361{color:var(--warn);font-weight:600}
+</style>`);
+
+const abrirAjuda1361 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1361();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.36.1:</b> na Busca, com a dependente trocada entre VU e VT, “Exigir sinais coerentes” confere a área base na unidade em que o sinal foi declarado. Sem enquadramento por micronumerosidade, o motivo aparece ao lado do grau. Valor adotado e texto para o avaliador editado à mão avisam quando foram definidos antes da última mudança no modelo. Na Contraprova, a Referência aparece na unidade da dependente atual quando ela foi trocada. Projeto que não abre mostra o motivo e preserva o que estava aberto. Ajustes de rótulo: resíduo padronizado (como no SisDEA), intervalo de confiança da estimativa central e R² ajustado do SisDEA calculado a partir do R² gravado.</p>`);
 };
 </script>
 </body>
