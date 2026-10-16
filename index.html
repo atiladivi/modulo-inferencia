@@ -779,6 +779,34 @@ body.nova-inf #tbl-d tr.novo:not(.desab):not(.sel):not(.outl) td.fx{background:#
 .am-arq{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
 .am-arq .nm{font-weight:700;word-break:break-all}.am-arq .det{font-size:12.5px;color:var(--ink-2)}.am-arq .sp{flex:1}
 .am-bts{display:flex;gap:8px;flex-wrap:wrap}
+/* v1.32.0: equação no topo e coluna calculada da dependente */
+.rs-eq{flex-direction:row;align-items:center;gap:10px;border-right:0;border-top:1px solid var(--line-2);padding:7px 20px;min-width:0}
+.rs-eq .k{flex:none}
+.rs-eq-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px Consolas,"Cascadia Mono",ui-monospace,monospace;color:var(--ink);background:none;border:0;padding:2px 0;text-align:left;cursor:copy}
+.rs-eq-t:hover{color:var(--petrol)}
+.rs-eq-t:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:3px}
+.rs-eq-ir{flex:none;font-size:12px;white-space:nowrap}
+@media (min-width:1101px){
+  .resumo.com-eq{display:grid;grid-template-columns:auto repeat(var(--eq-n,5),auto) minmax(0,1fr);grid-template-rows:auto auto}
+  .resumo.com-eq>.rs{grid-row:1}
+  .resumo.com-eq>.rs.dest{grid-column:1;grid-row:1/3}
+  .resumo.com-eq>.rs-selos{grid-column:-2/-1;grid-row:1/3}
+  .resumo.com-eq>.rs-eq{grid-row:2;grid-column:2/-2}
+}
+@media (max-width:1100px){
+  .resumo.com-eq>.rs-eq{flex-basis:100%;order:1}
+  .resumo.com-eq>.rs-selos{order:2}
+  .rs-eq-t{white-space:normal;overflow:visible}
+}
+@media (max-width:640px){
+  .resumo.com-eq>.rs-eq{grid-column:1/-1;padding:8px 0;flex-wrap:wrap;gap:4px 10px}
+  .resumo.com-eq>.rs-eq .rs-eq-t{flex-basis:100%;font-size:12.5px}
+}
+.calc-dep{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.calc-arr{display:flex;gap:6px;align-items:flex-start;color:var(--ink-2)}
+.calc-aj{width:100%}
+.calc-aj summary{cursor:pointer;font-size:12.5px;color:var(--ink-3)}
+.calc-aj .tbl-wrap{max-height:220px;overflow:auto;margin-top:4px}
 </style></head>
 <body>
 <section class="home" id="home">
@@ -1384,7 +1412,7 @@ function escreverXlsx(abas) {
         const v = o.v, ref = colunaNome(ci) + (ri + 1);
         const st = o.s !== undefined ? o.s : a.cabecalho !== false && ri === 0 ? 1 : 0, s = st ? ` s="${st}"` : "";
         if (o.f) return `<c r="${ref}"${s}><f>${xmlEsc(o.f)}</f>${typeof v === "number" && Number.isFinite(v) ? `<v>${v}</v>` : ""}</c>`;
-        if (v === undefined || v === null || v === "") return st ? `<c r="${ref}"${s}/>` : "";
+        if (v === undefined || v === null || v === "" || (typeof v === "number" && !Number.isFinite(v))) return st ? `<c r="${ref}"${s}/>` : "";   // v1.32.2: estimativa impossível = célula vazia
         return typeof v === "number" && Number.isFinite(v) ? `<c r="${ref}"${s}><v>${v}</v></c>` : `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
       }).join("") + "</row>";
     }).join("");
@@ -1454,7 +1482,8 @@ const TY = {
   Y: { r: "y", f: v => v, inv: v => v, ok: v => Number.isFinite(v), cresc: 1 },
   LN_Y: { r: "ln(y)", f: v => Math.log(v), inv: v => Math.exp(v), ok: v => v > 0, cresc: 1 },
   INV_Y: { r: "1/y", f: v => 1 / v, inv: v => 1 / v, ok: v => v !== 0, cresc: -1 },
-  Y2: { r: "y²", f: v => v * v, inv: v => Math.sqrt(Math.max(v, 0)), ok: v => v > 0, cresc: 1 },
+  /* v1.32.2: y² com ajustado negativo não tem volta para R$ (NaN = estimativa impossível, como invOk e o motor da busca); antes dava 0 nos limites do IC */
+  Y2: { r: "y²", f: v => v * v, inv: v => Math.sqrt(v), ok: v => v > 0, cresc: 1 },
   RAIZ_Y: { r: "√y", f: v => Math.sqrt(v), inv: v => v * v, ok: v => v > 0, cresc: 1 },
   INV_RAIZ_Y: { r: "1/√y", f: v => 1 / Math.sqrt(v), inv: v => 1 / (v * v), ok: v => v > 0, cresc: -1 },
   /* v1.12.0: 1/y², a única da lista do SisDEA e do TS-Sisreg que faltava (definição do núcleo 1.12.0 do formulário) */
@@ -1605,7 +1634,7 @@ function bannerModeloErro(r, tit) {
 function regressao(m, leve) {
   const lin = m.linhas.filter(l => l.ativo);
   const k = m.vars.length, p = k + 1, n = lin.length;
-  const r = { n, k, p, gl: n - p, erro: "" };
+  const r = { n, k, np: p, gl: n - p, erro: "" };   // v1.32.1 (A4): np = nº de parâmetros (antes nascia em r.p e era sobrescrito pelos p-valores)
   if (n <= p) { r.erro = `Dados insuficientes: ${n} dado(s) para ${p} parâmetro(s).`; return r; }
   const X = [], y = [];
   for (const l of lin) {
@@ -2209,7 +2238,7 @@ const EXEMPLO = {"entrega": {"avaliacao_id": "3b9e6f2a-8c41-4d7e-a5b2-91c0d4e7f5
 /* =====================================================================
    Inferência — exploração de modelos de regressão (protótipo independente) · v0.5.0
    ===================================================================== */
-const INF_VERSAO = "1.31.0";
+const INF_VERSAO = "1.34.1";
 Object.assign(TX, {
   X3: { r: "x³", f: v => v * v * v, ok: v => true, cresc: 1 },
   INV_X3: { r: "1/x³", f: v => 1 / (v * v * v), ok: v => v !== 0, cresc: -1 },
@@ -2273,9 +2302,7 @@ const S = {
   regraSan: undefined,                 // regra do Sanear (crit, lim, pct)
   regraSanAt: undefined,               // regra do Sanear usada na aba Dados
   buscaCheia: false,                   // Busca em tela cheia
-  buscaCompacta: false,                // Busca em coluna única (equação compacta)
   buscaT: undefined,                   // resultado da Busca com Testes (v1.14)
-  buscaDestino: undefined,             // resto da Busca com Testes; hoje só é zerado (bt-diag)
   faixaEst: undefined,                 // faixa de estimativa da Busca (ordenação pelo R² em R$)
   /* ---- revisão e entrega (v0.8.0, v1.0.0; as Alternativas da v0.9 saíram na v1.26.0) ---- */
   rev: undefined,                      // diagnóstico da Revisão (assinatura assinRev)
@@ -3787,29 +3814,7 @@ function abaDados() {
     </tbody></table></div><p class="small muted" style="margin:0">Desmarque um dado para retirá-lo do modelo: tudo é recalculado na hora. Clique no cabeçalho para ordenar.</p>`;
 }
 
-/* ------------------------------ Busca automática ------------------------------ */
-async function abrirBusca() {
-  const inc = S.vars.filter(v => v.inc);
-  if (!inc.length) return ui.toast("Inclua variáveis no modelo antes da busca.", "e");
-  const corpo = `<p class="small" style="margin:0">A busca testa as combinações de transformações das variáveis incluídas no modelo e da variável dependente, com os dados habilitados, e ordena as que atendem à NBR 14653-2 pelo maior R² ajustado. O resultado fica em Análise › Busca avançada.</p>
-    <div class="grid2" style="gap:14px">
-      <div class="fld"><span>Transformações a testar (quantitativas e proxies)</span><div class="opcoes">${ORDEM_TX.map(t => `<label><input type="checkbox" name="btx" value="${t}" ${PADRAO_BUSCA_TX.includes(t) ? "checked" : ""}>${esc(TX[t].r)}</label>`).join("")}</div></div>
-      <div class="fld"><span>Transformações da variável dependente</span><div class="opcoes">${ORDEM_TY.map(t => `<label><input type="checkbox" name="bty" value="${t}" ${PADRAO_BUSCA_TY.includes(t) ? "checked" : ""}>${esc(TY[t].r)}</label>`).join("")}</div></div>
-    </div>
-    <div class="grid2" style="gap:14px">
-      <div class="fld"><span>Grau mínimo de significância (regressores e modelo)</span><div class="opcoes gr-opcoes">${GRAU_MIN_OP.map(([g, t, l, q]) => `<label><input type="radio" name="bgr" value="${g}" ${g === "II" ? "checked" : ""}><span><b>${t}</b><small>${l}</small><small>${q}</small></span></label>`).join("")}</div></div>
-      <div class="fld"><span>Outras condições</span><label class="chk"><input type="checkbox" id="b-sinal"> Exigir sinais coerentes (onde o sinal esperado foi definido)</label><label class="chk"><input type="checkbox" id="b-cod"> Variar também códigos, qualitativas e dicotômicas</label></div>
-    </div>
-    <p class="small muted" id="b-conta" style="margin:0"></p>`;
-  const prom = ui.modal("Busca automática de transformações", corpo, [{ txt: "Cancelar", cls: "btn-ghost", valor: null }, { txt: "Buscar", cls: "btn-primary", valor: b => ({ tx: $$("[name=btx]:checked", b).map(x => x.value), ty: $$("[name=bty]:checked", b).map(x => x.value), grau: $("[name=bgr]:checked", b).value, sinal: $("#b-sinal", b).checked, cod: $("#b-cod", b).checked }) }], true);
-  const atualizarConta = () => { const b = ui.modalEl; const tx = $$("[name=btx]:checked", b).length, ty = $$("[name=bty]:checked", b).length, cod = $("#b-cod", b).checked; const n = inc.reduce((s, v) => s * (tipoVaria(v.tipo) || cod ? tx : 1), 1) * ty; $("#b-conta", b).textContent = `${fmtNumAuto(n)} combinações a testar${n > 400000 ? " · muitas: reduza as transformações ou as variáveis" : ""}.`; };
-  ui.modalEl.addEventListener("change", atualizarConta); atualizarConta();
-  const op = await prom;
-  if (!op) return;
-  if (!op.tx.length || !op.ty.length) return ui.toast("Escolha ao menos uma transformação.", "e");
-  executarBusca(op);
-}
-/* (v0.5.0: executarBusca reescrita no módulo v0.5.0, no fim do arquivo) */
+/* Busca: o diálogo (abrirBusca), a execução (executarBusca) e a aba (abaBusca) estão na Busca de Modelos, mais abaixo (v1.32.1: E1, uma declaração por função). */
 /* ------------------------------ Etapa 4: gravar ou exportar ------------------------------ */
 /* (v0.5.0: exportar reescrita no módulo v0.5.0, no fim do arquivo) */
 /* O que mudou em relação ao arquivo aberto e o que impede gravar de volta (só o que já foi validado nos programas). */
@@ -3849,7 +3854,7 @@ function ligar() {
   document.addEventListener("click", async e => {
     if (S.balao && !e.target.closest("#balao,[data-pt]")) desmarcar();
     if (S.alertasAbertos && !e.target.closest(".alertas,[data-acao=alertas]")) { S.alertasAbertos = false; desenharResumo(); }
-    const t = e.target.closest("[data-acao],[data-trdep],[data-trvar],[data-aplicar],[data-ir],[data-ord],[data-pt],[data-aba],[data-abre-var],[data-abre-dep]"); if (!t) return;
+    const t = e.target.closest("[data-acao],[data-trdep],[data-trvar],[data-ir],[data-ord],[data-pt],[data-aba],[data-abre-var],[data-abre-dep]"); if (!t) return;
     if (t.dataset.pt) return S.balao === t.dataset.pt ? desmarcar() : abrirBalao(t.dataset.pt, t);
     if (t.dataset.aba) { S.aba = t.dataset.aba; S.tela = "explorar"; S.alertasAbertos = false; desenhar(false); return; }
     if (t.dataset.abreVar !== undefined) { const i = +t.dataset.abreVar; S.varAberta = S.varAberta === i ? -1 : i; return desenharPainel(); }
@@ -3858,7 +3863,6 @@ function ligar() {
     if (t.dataset.trvar) { const [i, tr] = t.dataset.trvar.split(":"); S.vars[+i].tr = tr; return recalcular(true); }
     if (t.dataset.ir) { fecharBalao(); return localizar(t.dataset.ir); }
     if (t.dataset.ord) { const c = t.dataset.ord; S.ordD = { c, d: S.ordD.c === c ? -S.ordD.d : (c === "rp" || c === "cook" || c === "rr" ? -1 : 1) }; return desenhar(false); }
-    if (t.dataset.aplicar) { const x = S.busca.todos[+t.dataset.aplicar]; S.dep.tr = x.ty; S.vars.filter(v => v.inc).forEach((v, j) => { v.tr = x.trs[j]; }); S.aba = "resultado"; recalcular(true); return ui.toast("Transformações aplicadas ao modelo."); }
     const a = t.dataset.acao;
     if (a === "importar") return $("#inp-arq").click();
     if (a === "exemplo") return carregarDeLaudo(EXEMPLO, "Exemplo — laudo de demonstração 2026-0512 (fictício)", null, true);
@@ -4213,45 +4217,7 @@ async function abrirSalvar() {
    ===================================================================== */
 const BUSCA_LIMITE = 2000, BUSCA_PAGINA = 25;
 const ORD_GRAU = { "III": 3, "II": 2, "I": 1, "—": 0 };
-/* Valor de ordenação de cada coluna; desempate sempre pelo R² ajustado (maior primeiro). */
-function chaveBusca(x, c) {
-  if (c === "R2aj") return x.R2aj;
-  if (c === "pmax") return x.pmax;
-  if (c === "est") return x.central;
-  if (c === "amp") return x.amp;
-  if (c === "fund") return ORD_GRAU[x.fund];
-  if (c === "prec") return ORD_GRAU[x.prec];
-  if (c === "ty") return ORDEM_TY.indexOf(x.ty);
-  if (c.startsWith("tr:")) return ORDEM_TX.indexOf(x.trs[+c.slice(3)]);
-  return x.rank;
-}
-const DIR_INICIAL = { R2aj: -1, pmax: 1, est: -1, amp: 1, fund: -1, prec: -1 };
-function linhasBusca() {
-  const B = S.busca, F = B.filtros, o = B.ord;
-  const lista = B.todos.filter(x => (!F.p3 || x.prec === "III") && (!F.f2 || ORD_GRAU[x.fund] >= 2) && (!F.semEx || (x.est && !x.extrap)));
-  const val = v => Number.isFinite(v) ? v : null;
-  return lista.sort((a, b) => {
-    const x = val(chaveBusca(a, o.c)), y = val(chaveBusca(b, o.c));
-    if (x === null && y !== null) return 1; if (y === null && x !== null) return -1;   // sem valor sempre no fim
-    if (x !== y && x !== null) return (x > y ? 1 : -1) * o.d;
-    return b.R2aj - a.R2aj;
-  });
-}
-function abaBusca() {
-  const B = S.busca;
-  if (!B) return `<div class="vazio"><p style="margin:0 0 10px">A busca automática testa as combinações de transformações das variáveis do modelo e guarda todas as que atendem à NBR 14653-2 (até ${fmtNumAuto(BUSCA_LIMITE)}). Depois, ordene por qualquer coluna e filtre pelos graus.</p><button class="btn btn-gold" data-acao="busca">Configurar a busca</button></div>`;
-  const L = linhasBusca(), vis = L.slice(0, B.mostrar), o = B.ord;
-  const th = (c, t, cls = "r", tit = "") => `<th class="${cls}" data-bord="${esc(c)}" tabindex="0" aria-sort="${o.c === c ? (o.d > 0 ? "ascending" : "descending") : "none"}" title="${esc(tit || "Ordenar por " + t)}">${esc(t)}<span class="ord-seta">${o.c === c ? (o.d > 0 ? "▲" : "▼") : ""}</span></th>`;
-  const fil = (k, t) => `<button class="fil ${B.filtros[k] ? "on" : ""}" data-bfil="${k}" aria-pressed="${B.filtros[k]}">${t}</button>`;
-  const guardadas = Math.min(B.aprovadas, BUSCA_LIMITE);
-  return `<div class="barra"><span class="small">${fmtNumAuto(B.testadas)} combinações testadas em ${fmtNum(B.seg, 1)} s${B.parcial ? " (busca interrompida)" : ""} · <b>${fmtNumAuto(B.aprovadas)}</b> atendem à significância de grau ${B.grau}${B.aprovadas > BUSCA_LIMITE ? ` · guardadas as ${fmtNumAuto(BUSCA_LIMITE)} de maior R² ajustado` : ""}.</span><span class="sp"></span><button class="btn btn-sm" data-acao="busca">Nova busca</button></div>
-    <div class="barra filtros" role="group" aria-label="Filtros rápidos"><span class="small muted">Filtrar:</span>${fil("p3", "Só precisão III")}${fil("f2", "Só fundamentação ≥ II")}${fil("semEx", "Sem extrapolação")}<span class="sp"></span><span class="small muted">${L.length === guardadas ? `${fmtNumAuto(L.length)} combinações` : `${fmtNumAuto(L.length)} de ${fmtNumAuto(guardadas)} combinações`} · ordem: ${esc({ R2aj: "R² ajustado", pmax: "maior significância", est: "estimativa", amp: "amplitude", fund: "fundamentação", prec: "precisão", ty: "transformação de " + nomeCurto(S.dep.col) }[o.c] || (o.c.startsWith("tr:") ? "transformação de " + nomeCurto(B.inc[+o.c.slice(3)]) : ""))} ${o.d > 0 ? "crescente" : "decrescente"}</span></div>
-    ${vis.length ? `<div class="tbl-wrap busca-wrap"><table class="tbl tbl-busca"><thead><tr><th title="Posição pelo R² ajustado">#</th>${th("ty", nomeCurto(S.dep.col).slice(0, 22), "tcol", "Ordenar pela transformação de " + S.dep.col)}${B.inc.map((c, j) => th("tr:" + j, nomeCurto(c).slice(0, 22), "tcol", "Ordenar pela transformação de " + c)).join("")}${th("R2aj", "R² aj.")}${th("pmax", "Maior signif.", "r", "Maior p-valor entre os regressores (pior significância)")}${th("est", "Estimativa", "r", "Estimativa pela " + CRIT_NOME[critEf("LN_Y", S.crit)] + " (com ln(y); nas demais transformações de Y, pela mediana)")}${th("amp", "Amplitude", "r", "Amplitude do IC de 80% sobre a estimativa do critério")}${th("fund", "Fund.", "c")}${th("prec", "Prec.", "c")}<th></th></tr></thead><tbody>
-      ${vis.map(x => `<tr><td class="muted">${x.rank}</td><td class="mono">${esc(TY[x.ty].r)}</td>${x.trs.map(t => `<td class="mono">${esc(TX[t].r)}</td>`).join("")}<td class="r"><b>${fmtNum(x.R2aj, 4)}</b></td><td class="r" title="Pior significância: ${esc(x.pior)}">${fmtP(x.pmax)}<span class="pior">${esc(nomeCurto(x.pior).slice(0, 18))}</span></td><td class="r">${x.est ? fmtV(x.central) : "—"}${x.extrap ? '<span class="pior ex">extrapola</span>' : ""}</td><td class="r">${x.est ? fmtPct(x.amp, 1) : "—"}</td><td class="c"><span class="gr g${ORD_GRAU[x.fund]}">${x.fund}</span></td><td class="c"><span class="gr g${ORD_GRAU[x.prec]}">${x.prec}</span></td><td><button class="btn btn-sm" data-aplicar="${x.id}">Aplicar</button></td></tr>`).join("")}</tbody></table></div>
-      ${L.length > vis.length ? `<div class="barra"><button class="btn btn-sm" data-acao="bmais">Mostrar mais ${Math.min(BUSCA_PAGINA, L.length - vis.length)}</button><span class="small muted">mostrando ${vis.length} de ${fmtNumAuto(L.length)}</span></div>` : ""}`
-      : `<div class="vazio">${B.todos.length ? "Nenhuma combinação passa nos filtros escolhidos." : "Nenhuma combinação atende aos critérios. Tente um grau de significância menos exigente, mais transformações, ou revise os dados habilitados."}</div>`}
-    <p class="small muted" style="margin:0">Clique no título de uma coluna para ordenar; clique de novo para inverter. O desempate é sempre pelo R² ajustado. O R² ajustado de modelos com transformações diferentes da variável dependente não é diretamente comparável: use-o como triagem e confira os diagnósticos do modelo aplicado. Fund. = fundamentação (itens estatísticos); Prec. = precisão.</p>`;
-}
+/* (v1.32.1: chaveBusca, DIR_INICIAL, linhasBusca e a abaBusca da Busca avançada saíram; a aba é a Busca de Modelos, abaBusca/abaBuscaU, mais abaixo) */
 
 /* =====================================================================
    v0.5.0 — Régua de arbítrio (cartão "Valor adotado")
@@ -4273,7 +4239,7 @@ function cardRegua() {
   const R = reguaVals();
   const cab = `<h3>Valor adotado<span class="sp"></span><span class="small muted rg-sub">ajuste sobre a estimativa central</span></h3>`;
   if (!R) return `<div class="card card-rg" id="card-regua">${cab}<p class="small muted" style="margin:0">${esc(S.r && S.r.erro ? "O modelo não pode ser calculado." : "Informe o avaliando para ajustar o valor.")}</p></div>`;
-  const un = ehUnitario(S.dep.col) ? "R$/m²" : esc(nomeCurto(S.dep.col));
+  const un = depRotuloUnit() ? "R$/m²" : esc(nomeCurto(S.dep.col));   // v1.32.1 (revisão): coluna calculada pelo revisor → pela conta
   const icI = R.pos(R.pInf), icF = R.pos(R.pSup);
   return `<div class="card card-rg" id="card-regua">${cab}
     <div class="rg-vu"><span class="rg-v" id="rg-vu">${fmtNum(R.vu, 2)}</span><span class="rg-un">${un}</span><span class="sp"></span><span class="rg-pct" id="rg-pct"></span></div>
@@ -4510,13 +4476,10 @@ function exportarRelatorioSisdea() {
 /* ------------------------------ Eventos da v0.5.0 ------------------------------ */
 function ligar050() {
   document.addEventListener("click", e => {
-    const t = e.target.closest("[data-rg],[data-bord],[data-bfil],[data-graf],[data-acao^=rg-],[data-acao=bmais]"); if (!t) return;
+    const t = e.target.closest("[data-rg],[data-graf],[data-acao^=rg-]"); if (!t) return;
     if (t.dataset.rg !== undefined) { S.arb.pct = +t.dataset.rg; return atualizarRegua(); }
     if (t.dataset.graf !== undefined) return irParaGrafico(t.dataset.graf);
-    if (t.dataset.bord) { const c = t.dataset.bord, o = S.busca.ord; S.busca.ord = o.c === c ? { c, d: -o.d } : { c, d: DIR_INICIAL[c] || 1 }; S.busca.mostrar = BUSCA_PAGINA; desenhar(false); const th = $(`[data-bord="${CSS.escape(c)}"]`); if (th) th.focus({ preventScroll: true }); return; }
-    if (t.dataset.bfil) { S.busca.filtros[t.dataset.bfil] = !S.busca.filtros[t.dataset.bfil]; S.busca.mostrar = BUSCA_PAGINA; desenhar(false); const b = $(`[data-bfil="${t.dataset.bfil}"]`); if (b) b.focus({ preventScroll: true }); return; }
     const a = t.dataset.acao;
-    if (a === "bmais") { S.busca.mostrar += BUSCA_PAGINA; desenhar(false); return; }
     if (a === "rg-adotar") return adotarRegua();
     if (a === "rg-central") { S.arb.pct = 0; S.arb.adotado = null; desenharResumo(); return atualizarRegua(); }
     if (a === "rg-just") { S.arb.justAberta = !S.arb.justAberta; desenharPainel(); atualizarRegua(); const j = $("#rg-just"); if (j) j.focus(); }
@@ -4909,14 +4872,6 @@ function colarColuna(op) {
 /* ------------------------------ Busca desatualizada ------------------------------ */
 const assinBusca = () => `${S.dadosVer}|${S.dados.linhas.map(l => l.ativo ? 1 : 0).join("")}|${S.dep.col}`;
 const incBusca = () => S.vars.filter(v => v.inc).map(v => v.col).join("\u0001");
-const abaBusca050 = abaBusca;
-abaBusca = function () {
-  let h = abaBusca050(); const B = S.busca; if (!B || !B.assin) return h;
-  const incMud = B.incAssin !== incBusca(), dadosMud = B.assin !== assinBusca();
-  if (incMud) h = h.replace(/<button class="btn btn-sm" data-aplicar=/g, '<button class="btn btn-sm" disabled title="As variáveis do modelo mudaram depois da busca" data-aplicar=');
-  if (!incMud && !dadosMud) return h;
-  return `<div class="banner w banner-busca"><span class="bi">!</span><div><b>Resultado desatualizado</b><span class="small">${incMud ? "As variáveis do modelo mudaram depois da busca: o botão Aplicar fica desabilitado." : "Os dados (valores, inclusões ou dados habilitados) mudaram depois da busca: estimativas e graus abaixo são os do momento da busca."} Refaça a busca para atualizar.</span></div><button class="btn btn-sm btn-gold" data-acao="busca">Nova busca</button></div>` + h;
-};
 
 /* ------------------------------ Gravação: sempre do zero quando há alteração ------------------------------ */
 function incompletosParaGravar() {
@@ -5011,33 +4966,8 @@ document.addEventListener("DOMContentLoaded", () => { ligar060(); });
    ===================================================================== */
 function motorBusca(escopo) {
   "use strict";
-  /* ---------- distribuições (cópia das funções do núcleo, para rodar isolado no worker) ---------- */
-  function lnGama(x) {
-    const c = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
-    let y = x, t = x + 5.5; t -= (x + 0.5) * Math.log(t); let s = 1.000000000190015;
-    for (const k of c) s += k / ++y;
-    return -t + Math.log(2.5066282746310005 * s / x);
-  }
-  function betacf(a, b, x) {
-    const MAXIT = 300, EPS = 3e-14, FPMIN = 1e-300;
-    let qab = a + b, qap = a + 1, qam = a - 1, c = 1, d = 1 - qab * x / qap;
-    if (Math.abs(d) < FPMIN) d = FPMIN; d = 1 / d; let h = d;
-    for (let m = 1; m <= MAXIT; m++) {
-      const m2 = 2 * m; let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
-      d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN; c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN; d = 1 / d; h *= d * c;
-      aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
-      d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN; c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN; d = 1 / d;
-      const del = d * c; h *= del; if (Math.abs(del - 1) < EPS) break;
-    }
-    return h;
-  }
-  function betaReg(a, b, x) {
-    if (x <= 0) return 0; if (x >= 1) return 1;
-    const bt = Math.exp(lnGama(a + b) - lnGama(a) - lnGama(b) + a * Math.log(x) + b * Math.log(1 - x));
-    return x < (a + 1) / (a + b + 2) ? bt * betacf(a, b, x) / a : 1 - bt * betacf(b, a, 1 - x) / b;
-  }
-  const pT = (t, gl) => betaReg(gl / 2, 0.5, gl / (gl + t * t));
-  const pF = (f, d1, d2) => f > 0 ? betaReg(d2 / 2, d1 / 2, d2 / (d2 + d1 * f)) : 1;
+  /* v1.32.1 (E2): lnGama, betacf, betaReg, pT, pF e a volta de Y (TY, TY_INV_OK, invOk) são as do núcleo; no Worker vão junto,
+     pelo texto (fonteNucleoBusca). Antes havia cópias aqui, que já divergiam (invY de y² dava NaN; TY.Y2.inv dava 0). */
   const memo = new Map();
   /* |t| a partir do qual o p-valor bicaudal fica <= alfa */
   function tCrit(gl, alfa) {
@@ -5057,7 +4987,7 @@ function motorBusca(escopo) {
     const L = new Float64Array(k * k);
     for (let i = 0; i < k; i++) for (let j = 0; j <= i; j++) {
       let s = A[i * k + j]; for (let q = 0; q < j; q++) s -= L[i * k + q] * L[j * k + q];
-      if (i === j) { if (!(s > 1e-10 * A[i * k + i])) return null; L[i * k + i] = Math.sqrt(s); }
+      if (i === j) { if (!(s > 1e-12 * A[i * k + i])) return null; L[i * k + i] = Math.sqrt(s); }   // v1.32.1 (C8): mesma tolerância relativa de inverter() (A1, v1.22.1); antes 1e-10
       else L[i * k + j] = s / L[j * k + j];
     }
     const Li = new Float64Array(k * k);
@@ -5095,18 +5025,7 @@ function motorBusca(escopo) {
   /* ---------- v1.13.0: R² das estimativas em R$ (escala original) ----------
      fz(i) = valor ajustado padronizado do dado i; ativo = dados usados (null = todos).
      Estimativa pela inversa da transformação (ln(y): mediana, eˣ). Inversa impossível (fora do domínio) conta em nImp. */
-  function invY(cod, v) {
-    switch (cod) {
-      case "Y": return v;
-      case "LN_Y": return Math.exp(v);
-      case "INV_Y": return v > 0 ? 1 / v : NaN;
-      case "RAIZ_Y": return v >= 0 ? v * v : NaN;
-      case "INV_RAIZ_Y": return v > 0 ? 1 / (v * v) : NaN;
-      case "Y2": return v >= 0 ? Math.sqrt(v) : NaN;
-      case "INV_Y2": return v > 0 ? 1 / Math.sqrt(v) : NaN;
-      default: return NaN;
-    }
-  }
+  const invY = (cod, v) => invOk(cod, v) ? TY[cod].inv(v) : NaN;   // v1.32.1 (E2): a volta de Y é a do núcleo, com o domínio de invOk
   function r2Orig(yi, fz, ativo, s2z) {
     const cfg = P.cfg, Yo = cfg.Yo, cod = cfg.yCod[yi], mu = P.muY[yi], sd = P.sdY[yi], n = P.n;
     /* v1.22.1 (C10): ln(y) pelo critério da estimativa (cfg.crit; moda = e^(ŷ−s²), média = e^(ŷ+s²/2)), não mais só pela mediana.
@@ -5279,7 +5198,7 @@ function motorBusca(escopo) {
        A semente abaixo só vale se alguém ainda passar nAleat > 0, e não depende mais do núcleo (w). */
     const rnd = sorteador(cfg.semente || 7919);
     const inicios = cfg.inicios.slice(); for (let i = 0; i < cfg.nAleat; i++) inicios.push(null);
-    const obrig = new Set(cfg.obrig);
+    const obrig = new Set(cfg.obrig); let lote = 0;
     for (let s = 0; s < inicios.length; s++) {
       if (s % W !== w) continue;
       let at = inicios[s] || estadoAleatorio(rnd), rat = aval(at.yi, at.cols);
@@ -5291,7 +5210,8 @@ function motorBusca(escopo) {
         if (k > cfg.kmin) at.cols.forEach((c, j) => { if (!obrig.has(cfg.colVar[c])) viz.push({ yi: at.yi, cols: at.cols.filter((_, q) => q !== j) }); });
         at.cols.forEach((c, j) => L[cfg.colVar[c]].forEach(c2 => { if (c2 !== c) { const nv = at.cols.slice(); nv[j] = c2; viz.push({ yi: at.yi, cols: nv }); } }));
         let bv = null, br = NULO;
-        for (const v of viz) { const r = aval(v.yi, v.cols); if (melhor(r, br)) { br = r; bv = v; } }
+        for (const v of viz) { const r = aval(v.yi, v.cols); if (melhor(r, br)) { br = r; bv = v; }
+          if (++lote >= 300) { lote = 0; yield est; if (ctl.parar) return; } }   // v1.32.1 (C11): devolve o controle também dentro do passo (na tela, a janela de 45 ms vale)
         yield est; if (ctl.parar) return;
         if (bv && melhor(br, rat)) { at = bv; rat = br; } else break;
       }
@@ -5305,6 +5225,7 @@ function motorBusca(escopo) {
     preparar(cfg);
     est = { feitos: 0, aprov: 0, regs: 0, inicios: 0 };
     const top = new Top(cfg.limite), topT = cfg.todas ? new Top(cfg.limite) : null, hist = {}, quase = [], porVar = { t: {}, s: {}, m: {} };   // v1.15: topT = todas as equações (nível 1), sem saneamento   // v1.13.7: contagem por motivo e os mais próximos de passar
+    const aprovVis = cfg.estrategia === "passos" ? new Set() : null;   // v1.32.2 (C16): chaves distintas aprovadas por este núcleo; a união entre núcleos dá o total exibido
     const gI = cfg.alfaT <= 0.1 ? 0 : cfg.alfaT <= 0.2 ? 1 : 2, conta = (o, k) => { o[k] = (o[k] || 0) + 1; };
     const add = r => { est.feitos++;
       if (r) { est.calc = (est.calc || 0) + 1; if (topT) { const t0 = r.semSan !== undefined ? r.semSan : r; if (t0) topT.add(compacto(t0)); } }
@@ -5312,10 +5233,10 @@ function motorBusca(escopo) {
         if ((d.mot >> gI) & 1 && d.colPmax >= 0) conta(porVar.t, cfg.colVar[d.colPmax]);
         if (d.sinErr) [...new Set(d.sinErr.map(c => cfg.colVar[c]))].forEach(v => conta(porVar.s, v));
         if (d.microV >= 0) conta(porVar.m, d.microV); }
-      if (r && !r.fal) { est.aprov++; top.add(compacto(r)); }
+      if (r && !r.fal) { est.aprov++; top.add(compacto(r)); if (aprovVis) aprovVis.add(r.yi + "|" + Array.from(r.cols).sort((a, b) => a - b).join(",")); }
       else if (r && cfg.nQuase) { const c = compacto(r); c.nc = nCrit(r); quase.push(c); if (quase.length >= 4 * cfg.nQuase) { quase.sort(cmpQuase); quase.length = cfg.nQuase; } } };
     const fim = () => { quase.sort(cmpQuase); if (quase.length > (cfg.nQuase || 0)) quase.length = cfg.nQuase || 0;
-      return { feitos: est.feitos, aprov: est.aprov, regs: est.regs, inicios: est.inicios, parcial: !!ctl.parar, top: top.lista(), topT: topT ? topT.lista() : [], calc: est.calc || 0, hist, quase, porVar, vistas: est.vistas || null }; };
+      return { feitos: est.feitos, aprov: est.aprov, regs: est.regs, inicios: est.inicios, parcial: !!ctl.parar, top: top.lista(), topT: topT ? topT.lista() : [], calc: est.calc || 0, hist, quase, porVar, vistas: est.vistas || null, aprovVis: aprovVis ? [...aprovVis] : null }; };
     if (cfg.estrategia === "passos") { yield* passos(cfg, w, W, ctl, add); return fim(); }
     let it = -1, lote = 0;
     for (let yi = 0; yi < cfg.Y.length; yi++) {
@@ -5373,6 +5294,44 @@ function motorBusca(escopo) {
   return api;
 }
 
+/* ------------------------------ v1.32.1 (E2/C4): Workers gerados do texto do núcleo ------------------------------
+   O código que roda nos Workers é o próprio texto das funções e constantes do núcleo (toString), não uma cópia:
+   fonteNucleoBusca() para o motor (distribuições e volta de Y) e fonteNucleoDetalhar() para o detalhamento e os
+   testes das equações guardadas (C4). Cada elo de uma cadeia (regressao130/171, pontosMaxMin133/160…) vai com o
+   próprio nome, na ordem em que o Módulo os define. */
+function fonteValor(v) {
+  if (typeof v === "function") return "(" + v.toString() + ")";
+  if (typeof v === "number") return String(v);
+  if (Array.isArray(v)) return "[" + v.map(fonteValor).join(", ") + "]";
+  if (v && typeof v === "object") return "{ " + Object.entries(v).map(([k, x]) => JSON.stringify(k) + ": " + fonteValor(x)).join(", ") + " }";
+  return v === undefined ? "undefined" : JSON.stringify(v);
+}
+function fonteNucleo(obj) { return "\"use strict\";\n" + Object.entries(obj).map(([k, v]) => `var ${k} = ${fonteValor(v)};`).join("\n") + "\n"; }
+/* motor da busca: distribuições (lnGama, betacf, betaReg, pT, pF) e a volta de Y (TY, TY_INV_OK, invOk) */
+function fonteNucleoBusca() { return fonteNucleo({ lnGama, betacf, betaReg, pT, pF, TY, TY_INV_OK, invOk }); }
+/* detalhamento e testes (detalharItem): tudo o que detalharU e avaliarBT alcançam, com os formatadores que escrevem os textos dos avisos
+   (NF vai vazio: é o cache dos Intl.NumberFormat, que não tem texto) */
+function fonteNucleoDetalhar() {
+  const N = { NF: {}, nf, fmtNum, fmtNumAuto, fmtPct, nomeCurto, fmtV, fmtP, coefTxt, sinal1, normX, ehArea,
+    TX, TY, TY_INV_OK, invOk, lnGama, betacf, betaReg, pT, pF, qT080, inverter, pearson, explicarColinearidade, PEND, regressao130, regressao171, regressao,
+    efeito, estimar, grauAmp, critEf, aplicarCrit, fatorCrit, LIM_T, LIM_F, grauDe, fundamentacao,
+    minCat, regraMicroTxt, TIPOS_CAT, MAX_CAT_DISTINTOS, nDistintos, contaCat, microFalhas, microDet, analiseExtrap,
+    ERFC_COF, erfcCheb, erfAprox, gamaP, pQui2, breuschPagan, phiN, qNorm, shapiroWilk, lilliefors, invYSeguro, r2EmReais, detalharModelo, detalharU,
+    ORD_GRAU, BT_ORDEM, modeloAtual, comModeloBT, modeloBT, ativosIniBT, avaliarBT,
+    MM_K, mmPositivo, mmValido, mesmaColuna, CAT_NOME, areaAuto160, areaAuto, colunaArea, depEhTotal, pontosMaxMin133, pontosMaxMin160, pontosMaxMin, detalharItem };
+  /* S é o pedaço copiado pela mensagem; catAtual() lê a categoria já decidida na tela (contextoDetalhar a garante) */
+  return fonteNucleo(N) + `var S = null, QT_MEMO = new Map(), qT = ${qT.toString()}, catAtual = () => S.cat;\n` + WORKER_DETALHAR;
+}
+const WORKER_DETALHAR = `self.onmessage = ev => {
+  const d = ev.data; if (!d || d.tipo !== "detalhar") return;
+  try {
+    S = d.ctx.S; const M = d.ctx.M, op = d.ctx.op, C = d.ctx.C, Bw = { vlist: M.vlist, linA: M.linA }, out = []; let t = performance.now();
+    for (let i = 0; i < d.itens.length; i++) { const it = d.itens[i]; out.push(detalharItem(it.x0, it.nivel, M, op, C, Bw)); if (performance.now() - t > 80) { self.postMessage({ tipo: "prog", feitos: i + 1 }); t = performance.now(); } }
+    self.postMessage({ tipo: "fim", res: out });
+  } catch (e) { self.postMessage({ tipo: "erro", msg: String(e && e.stack || e) }); }
+};
+`;
+
 /* ------------------------------ Execução: workers ou tela ------------------------------ */
 const nucleos = () => Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
 /* v1.23.0 (C7): mesmo desempate do motor (Y, depois colunas), para o corte dos 2.000 não depender da ordem de chegada dos núcleos */
@@ -5397,7 +5356,7 @@ function juntarResultados(fins, cfg) {
     ["t", "s", "m"].forEach(q => Object.entries((f.porVar || {})[q] || {}).forEach(([k, v]) => { R.porVar[q][k] = (R.porVar[q][k] || 0) + v; }));
     (f.quase || []).forEach(x => { const k = x.yi + "|" + x.cols.slice().sort((a, b) => a - b).join(","); if (!vq.has(k)) { vq.add(k); R.quase.push(x); } });
     f.top.forEach(x => { const k = x.yi + "|" + x.cols.slice().sort((a, b) => a - b).join(","); if (!vistos.has(k)) { vistos.add(k); R.top.push(x); } }); });
-  if (cfg.estrategia === "passos") R.aprov = R.top.length;   // no passo a passo, os mesmos modelos podem ser vistos por mais de um núcleo
+  if (cfg.estrategia === "passos") { const u = new Set(); fins.forEach(f => (f.aprovVis || []).forEach(k => u.add(k))); R.aprov = u.size || R.top.length; }   // v1.32.2 (C16): equações distintas aprovadas (antes, a união das listas de cada núcleo antes do corte: 2.525 com 8 núcleos, 2.000 na tela)
   if (cfg.estrategia === "passos") { const u = new Set(); fins.forEach(f => (f.vistas || []).forEach(k => u.add(k))); if (u.size) R.feitos = u.size; }   // v1.23.0 (C1): "equações vistas" = distintas, igual com qualquer nº de núcleos
   R.top.sort(cmpBusca(cfg)); if (R.top.length > cfg.limite) R.top.length = cfg.limite;
   R.topT.sort(cmpDet); if (R.topT.length > cfg.limite) R.topT.length = cfg.limite;   // v1.23.0 (C7)
@@ -5434,7 +5393,7 @@ async function rodarNaTela(cfg, onProg, ctl) {
 async function rodarMotor(cfg, onProg, ctl) {
   const W = S.forcarTela ? 0 : nucleos(); let ws = [], url = "";
   if (W) try {
-    url = URL.createObjectURL(new Blob([`(${motorBusca.toString()})(self);`], { type: "text/javascript" }));
+    url = URL.createObjectURL(new Blob([fonteNucleoBusca() + `(${motorBusca.toString()})(self);`], { type: "text/javascript" }));   // v1.32.1 (E2): núcleo + motor
     for (let w = 0; w < W; w++) ws.push(new Worker(url));
   } catch (e) { ws.forEach(x => x.terminate()); ws = []; }
   if (ws.length) {
@@ -5696,7 +5655,8 @@ function textoPlano(P, op) {
 }
 
 /* ------------------------------ Diálogo da busca ------------------------------ */
-abrirBusca = async function () {
+/* v1.32.1 (E1): declaração única (a v0.4 e o invólucro v1.15, que monta as abas do diálogo, saíram) */
+async function abrirBusca() {
   if (!S.dados || !S.r) return;
   const linA = S.dados.linhas.filter(l => l.ativo);
   const falta = v => linA.filter(l => !Number.isFinite(l.v[v.col])).length;
@@ -5775,57 +5735,16 @@ abrirBusca = async function () {
   let tm = 0; const adiar = () => { clearTimeout(tm); $("#b-conta", b).textContent = "Calculando…"; tm = setTimeout(atual, 200); };
   b.addEventListener("change", adiar); b.addEventListener("input", e => { if (e.target.matches("input[type=text],input:not([type])")) adiar(); });
   atual();
+  try { abasDialogoU(b); } catch (e) { console.warn(e); }   // v1.15: diálogo em abas (O que buscar · NBR · Testes · Ordem)
   const res = await prom;
   if (!res) return;
   S.buscaCfg = { ...res.op, papel: { ...res.op.papelSel } };
   executarBusca(res.op, res.P);
-};
+}
 function regraDoForm2(b) { return { crit: $("#bs-crit", b).value, lim: Math.max(0.5, numIn($("#bs-lim", b).value, 2)), pct: Math.min(50, Math.max(0, numIn($("#bs-max", b).value, 10))) }; }
 
 /* ------------------------------ Execução da busca e detalhamento dos melhores ------------------------------ */
-/* v1.25.0 (E5): passou a ser a declaração (a v0.5.0 e o invólucro v0.6.0 saíram); a v1.15 a substitui por executarBuscaU. */
-async function executarBusca(op, P) {
-  if (!P) P = planejarBusca(op);
-  if (P.erro) return ui.aviso("Busca automática", `<p>${esc(P.erro)}</p>`);
-  const cfg = { ...P.cfg };
-  if (P.estr === "duas") cfg.listas = P.listasK(P.K);
-  if (P.estr === "passos") prepararPassos(cfg, P);   // v1.23.0 (C1): partidas sorteadas uma vez, com semente fixa
-  const nIni = cfg.inicios.length + cfg.nAleat;
-  const prog = document.createElement("div"); prog.className = "ocupado";
-  prog.innerHTML = `<div class="prog-box"><b>Testando modelos…</b><div class="prog-bar"><span id="pb"></span></div><span class="small muted" id="ps"></span><button class="btn btn-sm" id="pc">Interromper</button></div>`;
-  document.body.appendChild(prog);
-  const ctl = { parar: () => {} }; let parou = false;
-  $("#pc").onclick = () => { parou = true; $("#pc").disabled = true; $("#ps").textContent = "Interrompendo: guardando o melhor encontrado até aqui…"; ctl.parar(); };
-  const t0 = performance.now();
-  const onProg = e => {
-    if (parou) return;
-    const pct = cfg.estrategia === "passos" ? e.inicios / nIni : e.feitos / P.total;
-    $("#pb").style.width = Math.min(100, pct * 100) + "%";
-    $("#ps").textContent = cfg.estrategia === "passos" ? `${e.inicios} de ${nIni} pontos de partida · ${fmtNumAuto(e.feitos)} modelos vistos` : `${fmtNumAuto(e.feitos)} de ${fmtNumAuto(P.total)} modelos · ${fmtNumAuto(e.aprov)} atendem${cfg.sanear ? ` · ${fmtNumAuto(e.regs)} regressões` : ""}`;
-  };
-  let R;
-  try { R = await rodarMotor(cfg, onProg, ctl); }
-  catch (e) { prog.remove(); return ui.aviso("Busca automática", `<p>A busca falhou: ${esc(e.message || String(e))}</p>`); }
-  $("#ps").textContent = `Calculando estimativas e graus de ${fmtNumAuto(R.top.length)} modelos…`; $("#pb").style.width = "100%";
-  await new Promise(r => setTimeout(r, 0));
-  const M = P.meta, todos = [];
-  for (let i = 0; i < R.top.length; i++) {
-    const x = detalharModelo(R.top[i], M, op); if (x) todos.push(x);
-    if (i % 150 === 149) await new Promise(r => setTimeout(r, 0));
-  }
-  prog.remove();
-  const cmpF = (a, b) => (op.sanear && op.menosExcl && a.nExcl !== b.nExcl) ? a.nExcl - b.nExcl : op.ordem === "AIC" ? a.aic - b.aic : op.ordem === "BIC" ? a.bic - b.bic : op.ordem === "R2o" ? cmpR2o(a, b) : b.R2aj - a.R2aj;
-  todos.sort(cmpF); todos.forEach((x, i) => { x.id = i; x.rank = i + 1; x.temCrit = x.ty === "LN_Y"; });
-  S.busca = { v: 7, todos, testadas: R.feitos, regs: R.regs, aprovadas: R.aprov, total: P.total, grau: op.grau, seg: (performance.now() - t0) / 1000, parcial: R.parcial || parou,
-    /* v1.23.0 (C1/C2): estratégia, motivo e sorteio gravados. v1.26.0 (C14): o comentário ficava no meio da linha e engolia sanear/ordem/menosExcl/vifMax. */
-    nucleos: R.nucleos, modo: op.modo, estr: P.estr, K: P.K, nIni, ex: P.ex, auto: P.auto, reduzida: P.reduzida, lim: P.lim, semente: cfg.semente || SEMENTE_BUSCA, sanear: op.sanear, ordem: op.ordem, menosExcl: !!(op.sanear && op.menosExcl), vifMax: op.vifMax,
-    vcols: M.vlist.map(v => v.col), inc: S.vars.filter(v => v.inc).map(v => v.col),
-    ativosBase: new Map(S.dados.linhas.map(l => [l._k, l.ativo])), assin: assinBusca(), incAssin: incBusca(), assinAplic: null,
-    ord: { c: op.ordem === "AIC" ? "aic" : op.ordem === "BIC" ? "bic" : op.ordem === "R2o" ? "r2o" : "R2aj", d: op.ordem === "R2aj" || op.ordem === "R2o" ? -1 : 1 }, filtros: { p3: false, f2: false, semEx: false, semExcl: false, semOut: false, valido: true }, mostrar: BUSCA_PAGINA };
-  S.busca.op = op; try { S.busca.diag = diagBusca(R, P, op); } catch (e) { console.warn(e); S.busca.diag = null; }   // v1.13.7
-  S.tela = "explorar"; S.aba = "busca"; desenhar(false);
-  if (!todos.length && !op.sanear && S.busca.diag && !parou) { const B = S.busca; B.diag.san = await testeSaneamento(op, false); if (S.busca === B) desenhar(false); }
-}
+/* (v1.32.1: a executarBusca da v0.7.0 saiu; a declaração é a da Busca de Modelos, mais abaixo) */
 /* v1.13.0 — R² das estimativas em R$ (escala original, "Função Estimativa"): 1 − Σ(Y − Ŷ)² ÷ Σ(Y − Ȳ)², com Ŷ pela inversa da
    transformação de Y (ln(y): mediana, eˣ), nos dados usados. Inversa fora do domínio (ex.: 1/y com ajustado ≤ 0) = estimativa impossível. */
 function invYSeguro(t, v) {
@@ -5876,16 +5795,7 @@ function detalharModelo(x, M, op) {
 }
 
 /* ------------------------------ Aba Busca ------------------------------ */
-Object.assign(DIR_INICIAL, { aic: 1, bic: 1, k: 1, vif: 1, excl: 1, r2t: -1, estab: -1, nout: 1, r2o: -1 });
-chaveBusca = function (x, c) {
-  const m = { R2aj: x.R2aj, r2o: (x.nImp || 0) > 0 ? null : x.R2o, aic: x.aic, bic: x.bic, k: x.k, vif: x.vif, excl: x.nExcl, r2t: x.R2ajTodos, estab: x.estab, nout: x.nOut, pmax: x.pmax, est: x.central, amp: x.amp };
-  if (c in m) return m[c];
-  if (c === "fund") return ORD_GRAU[x.fund];
-  if (c === "prec") return ORD_GRAU[x.prec];
-  if (c === "ty") return ORDEM_TY.indexOf(x.ty);
-  if (c.startsWith("tr:")) { const t = (x.trMap || {})[c.slice(3)]; return t ? ORDEM_TX.indexOf(t) : null; }
-  return x.rank;
-};
+/* (v1.32.1: chaveBusca, linhasBusca, classeEstab e a abaBusca da v0.7.0 saíram) */
 /* Estabilidade: com que frequência cada dado é excluído entre os 50 primeiros (pelo critério da busca) da lista filtrada. */
 function estabilidade(lista) {
   const B = S.busca, top = lista.slice().sort((a, b) => a.rank - b.rank).slice(0, 50), freq = new Map();
@@ -5893,58 +5803,8 @@ function estabilidade(lista) {
   lista.forEach(x => { x.estab = x.nExcl ? x.excl.reduce((s, e) => s + (freq.get(e.id) || 0), 0) / x.nExcl / Math.max(1, top.length) * 100 : NaN; });
   return { freq: [...freq.entries()].sort((a, b) => b[1] - a[1]), n: top.length };
 }
-linhasBusca = function () {
-  const B = S.busca, F = B.filtros, o = B.ord;
-  const lista = B.todos.filter(x => (!F.p3 || x.prec === "III") && (!F.f2 || ORD_GRAU[x.fund] >= 2) && (!F.semEx || (x.est && !x.extrap)) && (!F.semExcl || !x.nExcl) && (!F.semOut || !x.nOut) && (!F.valido || estimValida(x)));
-  B.est = B.sanear ? estabilidade(lista) : null;
-  const val = v => Number.isFinite(v) ? v : null;
-  return lista.sort((a, b) => {
-    const x = val(chaveBusca(a, o.c)), y = val(chaveBusca(b, o.c));
-    if (x === null && y !== null) return 1; if (y === null && x !== null) return -1;
-    if (x !== y && x !== null) return (x > y ? 1 : -1) * o.d;
-    return a.rank - b.rank;
-  });
-};
-const classeEstab = p => !Number.isFinite(p) ? "" : p >= 70 ? "ok" : p >= 30 ? "w" : "e";
-abaBusca = function () {
-  const B = S.busca;
-  if (!B || B.v !== 7) return `<div class="vazio"><p style="margin:0 0 10px">A busca automática testa modelos com os dados habilitados e guarda os que atendem à NBR 14653-2 (até ${fmtNumAuto(BUSCA_LIMITE)}). Pode escolher só as transformações das variáveis do modelo ou também quais variáveis entram, e sanear os dados de cada modelo com uma regra fixa.</p><button class="btn btn-gold" data-acao="busca">Configurar a busca</button></div>`;
-  const L = linhasBusca(), vis = L.slice(0, B.mostrar), o = B.ord;
-  const incMud = B.modo === "transf" && B.incAssin !== incBusca(), varsSumiram = B.vcols.some(c => !S.vars.some(v => v.col === c));
-  const a = assinBusca(), dadosMud = a !== B.assin && a !== B.assinAplic;
-  const bloq = incMud ? "As variáveis do modelo mudaram depois da busca" : varsSumiram ? "Uma variável da busca foi excluída" : "";
-  const th = (c, t, cls = "r", tit = "") => `<th class="${cls}" data-bord="${esc(c)}" tabindex="0" aria-sort="${o.c === c ? (o.d > 0 ? "ascending" : "descending") : "none"}" title="${esc(tit || "Ordenar por " + t)}">${esc(t)}<span class="ord-seta">${o.c === c ? (o.d > 0 ? "▲" : "▼") : ""}</span></th>`;
-  const fil = (k, t) => `<button class="fil ${B.filtros[k] ? "on" : ""}" data-bfil="${k}" aria-pressed="${B.filtros[k]}">${t}</button>`;
-  const guardadas = B.todos.length, varsMode = B.modo === "vars", san = !!B.sanear, ic = B.ordem === "AIC" ? "aic" : B.ordem === "BIC" ? "bic" : "";
-  const estrTxt = estrTexto(B);   // v1.23.0 (C2/C6)
-  const nomeOrd = { R2aj: "R² ajustado", r2o: "R² em R$", aic: "AIC", bic: "BIC", k: "número de variáveis", vif: "VIF", excl: "exclusões", r2t: "R² aj. com todos", estab: "estabilidade", nout: "outliers", pmax: "maior significância", est: "estimativa", amp: "amplitude", fund: "fundamentação", prec: "precisão", ty: "transformação de " + nomeCurto(S.dep.col) };
-  const banner = dadosMud || bloq ? `<div class="banner w banner-busca"><span class="bi">!</span><div><b>Resultado desatualizado</b><span class="small">${bloq ? bloq + ": o botão Aplicar fica desabilitado." : "Os dados (valores, inclusões ou dados habilitados) mudaram depois da busca: estimativas e graus abaixo são os do momento da busca."} Refaça a busca para atualizar.</span></div><button class="btn btn-sm btn-gold" data-acao="busca">Nova busca</button></div>` : "";
-  const E = B.est, painelEstab = san && E && E.freq.length ? `<div class="estab"><span class="small"><b>Exclusões nos ${E.n} primeiros desta lista:</b></span> ${E.freq.slice(0, 12).map(([id, f]) => { const p = f / E.n * 100; return `<span class="chip ${classeEstab(p) === "ok" ? "ok" : classeEstab(p) === "w" ? "w" : "n"}" title="${esc(id)} é excluído em ${f} de ${E.n} modelos">${esc(id)} ${fmtNum(p, 0)}%</span>`; }).join(" ")}${E.freq.length > 12 ? ` <span class="small muted">e mais ${E.freq.length - 12}</span>` : ""}
-      <p class="small muted" style="margin:4px 0 0">Um dado excluído em quase todos os bons modelos é provavelmente um outlier real. Se cada modelo exclui dados diferentes, as exclusões estão servindo ao modelo: desconfie. A coluna Estab. resume isso por modelo.</p></div>` : "";
-  const cel = x => {
-    const exTit = x.excl.map((e, j) => `${j + 1}. ${e.id}: ${motivoTexto(e, B.sanear.crit)}`).join("\n");
-    return `<tr><td class="muted">${x.rank}</td><td class="mono">${esc(TY[x.ty].r)}</td>${B.vcols.map(c => x.trMap[c] ? `<td class="mono">${esc(TX[x.trMap[c]].r)}</td>` : `<td class="mono muted c">—</td>`).join("")}
-      ${varsMode ? `<td class="c">${x.k + 1}</td>` : ""}<td class="r"><b>${fmtNum(x.R2aj, 4)}</b></td><td class="r">${fmtR2o(x)}</td>${ic ? `<td class="r">${fmtNum(x[ic], 1)}</td>` : ""}
-      ${san ? `<td class="r" title="${esc(exTit || "Nenhum dado excluído")}">${x.nExcl ? `<b>${x.nExcl}</b><span class="pior">${esc(x.excl.slice(0, 3).map(e => e.id).join(", "))}${x.nExcl > 3 ? "…" : ""}</span>` : '<span class="muted">0</span>'}</td><td class="r">${fmtNum(x.R2ajTodos, 4)}</td><td class="c">${x.nExcl ? `<span class="gr est-${classeEstab(x.estab)}">${fmtNum(x.estab, 0)}%</span>` : '<span class="muted">—</span>'}</td>` : ""}
-      <td class="r">${x.k > 1 ? fmtNum(x.vif, 1) : "—"}</td>
-      <td class="r" title="Pior significância: ${esc(x.pior)}">${fmtP(x.pmax)}<span class="pior">${esc(nomeCurto(x.pior).slice(0, 18))}</span></td><td class="r">${x.est ? fmtV(x.central) : "—"}${x.extrap ? '<span class="pior ex">extrapola</span>' : ""}</td><td class="r">${x.est ? fmtPct(x.amp, 1) : "—"}</td>
-      <td class="c"><span class="gr g${ORD_GRAU[x.fund]}">${x.fund}</span></td><td class="c"><span class="gr g${ORD_GRAU[x.prec]}">${x.prec}</span></td>
-      <td><button class="btn btn-sm" data-baplicar="${x.id}" ${bloq ? `disabled title="${esc(bloq)}"` : `title="${x.nExcl ? `Aplica variáveis, transformações e desabilita ${x.nExcl} dado(s) com o motivo` : "Aplica variáveis e transformações ao modelo"}"`}>Aplicar</button></td></tr>`;
-  };
-  const cab = `<tr><th title="Posição pelo critério da busca">#</th>${th("ty", nomeCurto(S.dep.col).slice(0, 22), "tcol", "Ordenar pela transformação de " + S.dep.col)}${B.vcols.map(c => th("tr:" + c, nomeCurto(c).slice(0, 22), "tcol", "Ordenar pela transformação de " + c)).join("")}
-    ${varsMode ? th("k", "Var.", "c", "Número de variáveis no modelo, contando a dependente") : ""}${th("R2aj", "R² aj.")}${th("r2o", "R² R$", "r", "R² das estimativas em R$ (escala original, como a Função Estimativa): compara modelos com transformações diferentes de Y na mesma régua. Com ln(y), estimativa pela mediana.")}${ic ? th(ic, ic.toUpperCase(), "r", `Critério de informação ${ic.toUpperCase()} (menor é melhor; só compara modelos com a mesma transformação de Y e os mesmos dados)`) : ""}
-    ${san ? th("excl", "Excl.", "r", "Dados excluídos pelo saneamento") + th("r2t", "R² aj. todos", "r", "R² ajustado do mesmo modelo com todos os dados, antes do saneamento") + th("estab", "Estab.", "c", "Média da frequência com que os dados excluídos por este modelo são excluídos nos 50 primeiros da lista") : ""}
-    ${th("vif", "VIF máx.", "r", "Maior fator de inflação da variância entre os regressores")}${th("pmax", "Maior signif.", "r", "Maior p-valor entre os regressores (pior significância)")}${th("est", "Estimativa", "r", "Estimativa pela " + CRIT_NOME[critEf("LN_Y", S.crit)] + " (com ln(y); nas demais transformações de Y, pela mediana)")}${th("amp", "Amplitude", "r", "Amplitude do IC de 80% sobre a estimativa do critério")}${th("fund", "Fund.", "c")}${th("prec", "Prec.", "c")}<th></th></tr>`;
-  const nCols = 2 + B.vcols.length + (varsMode ? 1 : 0) + 2 + (ic ? 1 : 0) + (san ? 3 : 0) + 8;
-  return `${banner}<div class="barra"><span class="small">${esc(B.modo === "vars" ? "Variáveis e transformações" : "Só transformações")} · ${esc(estrTxt)}${san ? ` · saneamento: ${esc(regraTexto(B.sanear))}` : ""}<br>${fmtNumAuto(B.testadas)} modelos testados${B.regs > B.testadas ? ` (${fmtNumAuto(B.regs)} regressões)` : ""} em ${fmtNum(B.seg, 1)} s${B.nucleos ? ` em ${B.nucleos} núcleo(s)` : " na tela"}${B.parcial ? " (busca interrompida)" : ""} · <b>${fmtNumAuto(B.aprovadas)}</b> atendem à significância de grau ${B.grau}${B.aprovadas > guardadas ? ` · guardados os ${fmtNumAuto(guardadas)} melhores pelo ${esc(B.ordem === "R2aj" ? "R² ajustado" : B.ordem === "R2o" ? "R² em R$" : B.ordem)}${B.menosExcl ? ", com menos exclusões primeiro" : ""}` : ""}.</span><span class="sp"></span><button class="btn btn-sm" data-acao="busca">Nova busca</button></div>
-    <div class="barra filtros" role="group" aria-label="Filtros rápidos"><span class="small muted">Filtrar:</span>${fil("p3", "Só precisão III")}${fil("f2", "Só fundamentação ≥ II")}${fil("semEx", "Sem extrapolação")}${fil("semOut", "Sem outliers no resultado")}${san ? fil("semExcl", "Sem exclusões") : ""}${B.todos.some(x => !estimValida(x)) ? fil("valido", `Só estimativas válidas em R$ (${fmtNumAuto(B.todos.filter(x => !estimValida(x)).length)} fora)`) : ""}<span class="sp"></span><span class="small muted">${L.length === guardadas ? `${fmtNumAuto(L.length)} modelos` : `${fmtNumAuto(L.length)} de ${fmtNumAuto(guardadas)} modelos`} · ordem: ${esc(nomeOrd[o.c] || (o.c.startsWith("tr:") ? "transformação de " + nomeCurto(o.c.slice(3)) : ""))} ${o.d > 0 ? "crescente" : "decrescente"}</span></div>
-    ${painelEstab}
-    ${vis.length ? `<div class="tbl-wrap busca-wrap"><table class="tbl tbl-busca"><thead>${cab}</thead><tbody>${vis.map(cel).join("")}</tbody></table></div>
-      ${L.length > vis.length ? `<div class="barra"><button class="btn btn-sm" data-acao="bmais">Mostrar mais ${Math.min(BUSCA_PAGINA, L.length - vis.length)}</button><span class="small muted">mostrando ${vis.length} de ${fmtNumAuto(L.length)}</span></div>` : ""}`
-      : `<div class="vazio">${B.todos.length ? "Nenhum modelo passa nos filtros escolhidos." : `Nenhum modelo atende aos critérios. Tente um grau de significância menos exigente, mais transformações${varsMode ? " ou mais variáveis candidatas" : ""}, ou revise os dados habilitados.`}</div>`}
-    <p class="small muted" style="margin:0">Clique no título de uma coluna para ordenar; clique de novo para inverter. O R² ajustado, o AIC e o BIC de modelos com transformações diferentes da variável dependente${san ? " ou com dados excluídos diferentes" : ""} não são diretamente comparáveis: use-os como triagem e confira os diagnósticos do modelo aplicado. O <b>R² R$</b> mede as estimativas em R$ (escala original) e compara modelos com Y diferentes na mesma régua; serve só para ordenar: o R² do laudo continua sendo o da equação. “Impossível” = a volta para R$ não existe em algum dado (ex.: 1/y com estimativa ≤ 0). R² R$ negativo = o modelo erra mais que a média dos preços. O filtro “Só estimativas válidas em R$” esconde os dois casos e vem ligado. — em uma variável = fora do modelo. Fund. = fundamentação (itens estatísticos); Prec. = precisão.</p>`;
-};
 function aplicarDaBusca(id) {
+  S.buscaCheia = false; document.body.classList.remove("busca-cheia");   // v1.13.3: fecha a tela cheia (v1.32.1 E1: antes um invólucro)
   const B = S.busca, x = B && B.todos[+id]; if (!x) return;
   if (B.vcols.some(c => !S.vars.some(v => v.col === c))) return ui.toast("Uma variável da busca foi excluída. Refaça a busca.", "e");
   pushHistAtivos("aplicar o modelo da busca");
@@ -5997,7 +5857,17 @@ const ORDG = g => ORD_GRAU[g] || 0;
 const LIM_AMP = { III: 30, II: 40, I: 50 }, MULT_N = { III: 6, II: 4, I: 3 };
 
 /* ---------- funções estatísticas auxiliares ---------- */
-function erfAprox(x) { const s = Math.sign(x); x = Math.abs(x); const t = 1 / (1 + 0.3275911 * x); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return s * y; }
+/* v1.32.1 (A5): erf de precisão dupla — erfc por Chebyshev (Numerical Recipes 3ª ed., Erf::erfccheb, erro < 1,2e-16);
+   antes, Abramowitz-Stegun 7.1.26 (erro até 1,5e-7). Alimenta phiN: p de Shapiro-Wilk, Lilliefors, Durbin-Watson e o passo de Newton de qNorm. */
+function erfAprox(x) { if (!Number.isFinite(x)) return x > 0 ? 1 : x < 0 ? -1 : NaN; return x >= 0 ? 1 - erfcCheb(x) : erfcCheb(-x) - 1; }
+const ERFC_COF = [-1.3026537197817094, 6.4196979235649026e-1, 1.9476473204185836e-2, -9.561514786808631e-3, -9.46595344482036e-4, 3.66839497852761e-4, 4.2523324806907e-5, -2.0278578112534e-5,
+  -1.624290004647e-6, 1.303655835580e-6, 1.5626441722e-8, -8.5238095915e-8, 6.529054439e-9, 5.059343495e-9, -9.91364156e-10, -2.27365122e-10, 9.6467911e-11, 2.394038e-12, -6.886027e-12, 8.94487e-13,
+  3.13092e-13, -1.12708e-13, 3.81e-16, 7.106e-15, -1.523e-15, -9.4e-17, 1.21e-16, -2.8e-17];
+function erfcCheb(z) {   // z ≥ 0
+  const t = 2 / (2 + z), ty = 4 * t - 2; let d = 0, dd = 0;
+  for (let j = ERFC_COF.length - 1; j > 0; j--) { const tmp = d; d = ty * d - dd + ERFC_COF[j]; dd = tmp; }
+  return t * Math.exp(-z * z + 0.5 * (ERFC_COF[0] + ty * d) - dd);
+}
 /* P(a, x): gama incompleta regularizada inferior (distribuição qui-quadrado) */
 function gamaP(a, x) {
   if (!(x > 0)) return 0;
@@ -6277,7 +6147,8 @@ document.addEventListener("DOMContentLoaded", () => { ligar080(); });
    Projetos antigos com "alt" abrem normalmente; o campo é ignorado. Ficaram só os apoios que a Entrega usa.
    ===================================================================== */
 /* qT: bissecção de 200 passos; com milhares de modelos avaliados, guardar por grau de liberdade */
-{ const qT080 = qT, memo = new Map(); qT = (p, gl) => { const k = p + ":" + gl; let v = memo.get(k); if (v === undefined) { v = qT080(p, gl); memo.set(k, v); } return v; }; }
+const qT080 = qT, QT_MEMO = new Map();   // v1.32.1: no escopo do script, para o Worker do detalhamento receber qT080 pelo texto
+qT = (p, gl) => { const k = p + ":" + gl; let v = QT_MEMO.get(k); if (v === undefined) { v = qT080(p, gl); QT_MEMO.set(k, v); } return v; };
 const somaG = R => ORDG(R.fund) + ORDG(R.prec), minG = R => Math.min(ORDG(R.fund), ORDG(R.prec));
 /* Valor de referência: o declarado no arquivo (laudo ou programa); sem ele, a estimativa do modelo recebido. */
 function valorRef() {
@@ -7782,36 +7653,16 @@ function restaurarRolBusca() {
   const ap = () => { if (w) { w.scrollLeft = R.left; w.scrollTop = R.top; } if (S.buscaCheia) { const b = $(".abas-box"); if (b) b.scrollTop = R.box; } else window.scrollTo(window.scrollX, R.y); };
   ap(); requestAnimationFrame(() => { ap(); rolBusca = null; });
 }
-function eqBusca(x) { return `${rotTY(x.ty, nomeCurto(S.dep.col))} = ${S.busca.vcols.filter(c => x.trMap[c]).map(c => rotTX(x.trMap[c], nomeCurto(c))).join(" + ")}`; }
-const abaBusca121 = abaBusca;
-abaBusca = function () {
-  const B = S.busca; if (!B || B.v !== 7 || !S.buscaCompacta) return abaBusca121();
-  const vc = B.vcols; B.vcols = [];
-  try { return abaBusca121(); } finally { B.vcols = vc; }
-};
+/* v1.32.1 (E1): declaração única (o invólucro v1.13.3 e a "equação compacta" da v1.2.1, sem botão desde a v1.15, saíram). */
 function ajustarBusca() {
+  if (S.aba !== "busca" && S.buscaCheia) S.buscaCheia = false;
   document.body.classList.toggle("busca-cheia", S.buscaCheia && S.aba === "busca");
   if (S.aba !== "busca") return;
-  const B = S.busca, tb = $(".tbl-busca"), w = $(".busca-wrap");
-  // botões na barra da busca
-  const barra = $("#aba-conteudo .barra"); if (barra && B && B.v === 7 && !$("[data-acao=bcheia]", barra)) {
-    const nb = $("[data-acao=busca]", barra);
-    const html = `<button class="btn btn-sm ${S.buscaCompacta ? "btn-primary" : ""}" data-acao="bcomp" aria-pressed="${S.buscaCompacta}" title="Uma coluna com a equação no lugar de uma coluna por variável">Equação compacta</button><button class="btn btn-sm" data-acao="bcheia" title="${S.buscaCheia ? "Voltar à tela normal (Esc)" : "A tabela ocupa a janela inteira (Esc volta)"}">${S.buscaCheia ? "✕ Sair da tela cheia" : "⤢ Tela cheia"}</button>`;
-    if (nb) nb.insertAdjacentHTML("beforebegin", html); else barra.insertAdjacentHTML("beforeend", html);
-  }
-  if (tb && S.buscaCompacta && B) {
-    const th = tb.querySelector("thead th:nth-child(2)"); if (th) { th.firstChild.textContent = "Equação"; th.classList.add("b-eq"); th.title = "Ordenar pela transformação de " + S.dep.col; }
-    $$("tbody tr", tb).forEach(tr => { const bt = tr.querySelector("[data-baplicar]"), td = tr.children[1]; if (!bt || !td) return; const x = B.todos[+bt.dataset.baplicar]; if (x) { td.textContent = eqBusca(x); td.classList.add("b-eq"); td.title = eqBusca(x); } });
-  }
-  if (tb) tb.classList.toggle("b-fixa", !S.buscaCompacta);
-  if (w) {
-    const top = S.buscaCheia ? w.getBoundingClientRect().top + ($(".abas-box") ? $(".abas-box").scrollTop : 0) - ($(".abas-box") ? $(".abas-box").getBoundingClientRect().top : 0) : (($(".inf-top") || {}).offsetHeight || 56) + 12;
-    w.style.maxHeight = Math.max(280, window.innerHeight - top - (S.buscaCheia ? 70 : 16)) + "px";
-  }
   restaurarRolBusca();
+  inserirFaixa();
 }
 const desenharAbas121 = desenharAbas;
-desenharAbas = function () { desenharAbas121(); ajustarBusca(); };
+desenharAbas = function () { if (S.aba === "buscat") S.aba = "busca"; desenharAbas121(); ajustarBusca(); };   // v1.32.1 (E1): a guarda da aba "buscat" (v1.15) veio para cá
 function alternarBuscaCheia(on) {
   S.buscaCheia = on === undefined ? !S.buscaCheia : on;
   guardarRolBusca(true); rolBusca.y = window.scrollY;
@@ -7820,11 +7671,8 @@ function alternarBuscaCheia(on) {
 }
 function ligar122() {
   document.addEventListener("click", e => {
-    const t = e.target.closest("[data-bord],[data-bfil],[data-acao=bmais],[data-acao=bcomp],[data-acao=bcheia]"); if (!t || !S.busca) return;
-    const a = t.dataset.acao;
-    if (a === "bcheia") { e.stopImmediatePropagation(); return alternarBuscaCheia(); }
-    if (a === "bcomp") { e.stopImmediatePropagation(); S.buscaCompacta = !S.buscaCompacta; guardarRolBusca(true); rolBusca.left = 0; return desenharAbas(); }
-    guardarRolBusca(a === "bmais");
+    const t = e.target.closest("[data-acao=bcheia]"); if (!t || !S.busca) return;
+    e.stopImmediatePropagation(); alternarBuscaCheia();
   }, true);
   document.addEventListener("keydown", e => { if (e.key === "Escape" && S.buscaCheia && S.aba === "busca" && !$(".modal-bg") && !S.balao) { e.preventDefault(); alternarBuscaCheia(false); } });
   let tm = 0; window.addEventListener("resize", () => { clearTimeout(tm); tm = setTimeout(() => { if (S.aba === "busca" && !$("#app").hidden) ajustarBusca(); }, 150); });
@@ -8047,8 +7895,8 @@ abrirSanear = async function () {
 /* ------------------------------ Topo ------------------------------ */
 function textoAmplitude(e) {
   const a = e.sup - e.inf, c = S.dep.col;
-  if (ehUnitario(c)) return `R$ ${fmtNum(a, 2)}/m²`;
-  if (/valor|preco|^vt\b|total/.test(normX(c))) return fmtMoney(a);
+  if (depRotuloUnit()) return `R$ ${fmtNum(a, 2)}/m²`;   // v1.32.1 (revisão): com coluna calculada pelo revisor, vale a conta, não o nome
+  if (/valor|preco|^vt\b|total/.test(normX(c)) || (S.calcDep && c === S.calcDep.col)) return fmtMoney(a);
   return `${fmtV(a)} em ${nomeCurto(c)}`;
 }
 function rsAmplitude(e) {
@@ -8224,8 +8072,9 @@ function pontosMaxMin() {
     const d = { est: es.central, ic0: es.inf, ic1: es.sup, ip0: Math.min(i1, i2), ip1: Math.max(i1, i2) };
     const u = {}, t = {}; K.forEach(k => { u[k] = tot ? d[k] / p.x : d[k]; t[k] = tot ? d[k] : d[k] * p.x; });
     return { ...p, u, t, amp: es.amp, grau: es.grauP, fora: p.x < lo || p.x > hi };
-  }).filter(p => !p.erro && K.every(k => Number.isFinite(p.u[k]) && Number.isFinite(p.t[k])));
-  return { col, lo, hi, passo, trNome, linhas, tot, noModelo: m.vars.some(v => ligadas.includes(v.col)), crit: e.crit };
+  }).filter(p => !p.erro), nImp = linhas.length;   // v1.32.2: pontos calculados, mas sem valor em R$ (estimativa impossível), contados em nImp
+  const validas = linhas.filter(p => K.every(k => Number.isFinite(p.u[k]) && Number.isFinite(p.t[k])));
+  return { col, lo, hi, passo, trNome, linhas: validas, nImp: nImp - validas.length, tot, noModelo: m.vars.some(v => ligadas.includes(v.col)), crit: e.crit };
 }
 function grafMaxMin(P, q, titulo) {
   const L = P.linhas, W = 460, H = 250, Le = 66, R = 12, T = 22, B = 30;
@@ -9250,7 +9099,7 @@ const regressao171 = regressao;
 regressao = function (m, leve) {
   if (m && m.dep && (m.dep.tr === PEND || (m.vars || []).some(v => v.tr === PEND))) {
     const n = m.linhas.filter(l => l.ativo).length, k = m.vars.length;
-    return { n, k, p: k + 1, gl: n - k - 1, erro: "Defina as transformações para calcular o modelo.", pend: true };
+    return { n, k, np: k + 1, gl: n - k - 1, erro: "Defina as transformações para calcular o modelo.", pend: true };
   }
   return regressao171(m, leve);
 };
@@ -10227,12 +10076,6 @@ function faixaNova() {
   faixaRecalc(F); return F;
 }
 const faixaAtiva = F => F && F.on && Number.isFinite(F.lo) && Number.isFinite(F.hi) && F.lo <= F.hi;
-const linhasBusca1133 = linhasBusca;
-linhasBusca = function () {
-  const L = linhasBusca1133(), F = faixaAtual();
-  if (!faixaAtiva(F)) return L;
-  return L.filter(x => x.est && Number.isFinite(x.central) && x.central >= F.lo - 1e-9 && x.central <= F.hi + 1e-9);
-};
 function htmlFaixa() {
   const F = faixaAtual() || faixaNova(), refs = faixaRefs(), dis = F.on ? "" : "disabled";
   const num = v => Number.isFinite(v) ? fmtNum(v, 2) : "";
@@ -10247,7 +10090,8 @@ function htmlFaixa() {
   </div>`;
 }
 function inserirFaixa() {
-  if (S.aba !== "busca" || !S.busca || S.busca.v !== 7) return;
+  const B = S.busca; if (B && B.v15 && !B.filAberto) return;   // v1.17: a faixa fica no painel de filtros (v1.32.1 E1: antes um invólucro)
+  if (S.aba !== "busca" || !B || B.v !== 7) return;
   const fb = $("#aba-conteudo .barra.filtros:not(.faixa-est)"); if (!fb || $("#aba-conteudo .faixa-est")) return;
   fb.insertAdjacentHTML("afterend", htmlFaixa());
 }
@@ -10276,17 +10120,6 @@ function ligar1133() {
 document.addEventListener("DOMContentLoaded", () => { ligar1133(); });
 
 /* ---------- 6. tela cheia: fecha ao aplicar, ao sair da aba e ao abrir outro modelo ---------- */
-const aplicarDaBusca1133 = aplicarDaBusca;
-aplicarDaBusca = function (id) {
-  S.buscaCheia = false; document.body.classList.remove("busca-cheia");
-  return aplicarDaBusca1133(id);
-};
-const ajustarBusca1133 = ajustarBusca;
-ajustarBusca = function () {
-  if (S.aba !== "busca" && S.buscaCheia) S.buscaCheia = false;
-  ajustarBusca1133();
-  inserirFaixa();
-};
 const entrarNoModelo1133 = entrarNoModelo;
 entrarNoModelo = function (...a) { S.buscaCheia = false; document.body.classList.remove("busca-cheia"); return entrarNoModelo1133(...a); };
 
@@ -10496,29 +10329,6 @@ function painelDiag(B) {
     <section><h4>4. Os que quase passaram</h4>${q}<p class="small muted" style="margin:0">Se o que falta é sempre a mesma variável, o problema está nela (preenchimento, transformação ou sinal esperado); se aparece sempre o mesmo dado com resíduo alto, confira esse dado.</p></section>
   </div>`;
 }
-/* Há modelos guardados, mas os filtros escondem todos. */
-function painelFiltros(B) {
-  const F = B.filtros, T = B.todos, at = [];
-  const conta = f => T.filter(x => !f(x)).length;
-  if (F.valido) at.push(["Só estimativas válidas em R$", conta(estimValida)]);
-  if (F.p3) at.push(["Só precisão III", conta(x => x.prec === "III")]);
-  if (F.f2) at.push(["Só fundamentação ≥ II", conta(x => ORD_GRAU[x.fund] >= 2)]);
-  if (F.semEx) at.push(["Sem extrapolação", conta(x => x.est && !x.extrap)]);
-  if (F.semOut) at.push(["Sem outliers no resultado", conta(x => !x.nOut)]);
-  if (F.semExcl) at.push(["Sem exclusões", conta(x => !x.nExcl)]);
-  const Fx = faixaAtual(); if (faixaAtiva(Fx)) at.push([`Estimativa entre ${fmtV(Fx.lo)} e ${fmtV(Fx.hi)}`, conta(x => x.est && Number.isFinite(x.central) && x.central >= Fx.lo - 1e-9 && x.central <= Fx.hi + 1e-9)]);
-  return `<div class="vazio bd-filtros"><p style="margin:0 0 6px"><b>Há ${fmtNumAuto(T.length)} modelo${T.length === 1 ? "" : "s"} que passa${T.length === 1 ? "" : "m"} nos critérios, mas os filtros escondem todos.</b></p>
-    ${at.filter(x => x[1]).length ? `<ul class="small" style="text-align:left;display:inline-block;margin:0 0 8px">${at.filter(x => x[1]).map(([t, q]) => `<li>${esc(t)}: esconde ${fmtNumAuto(q)}</li>`).join("")}</ul><br>` : ""}
-    <button class="btn btn-sm btn-primary" data-acao="bdiag-limpar">Mostrar todos</button></div>`;
-}
-const abaBusca1136 = abaBusca;
-abaBusca = function () {
-  let h = abaBusca1136(); const B = S.busca;
-  if (!B || B.v !== 7) return h;
-  if (!B.todos.length) h = h.replace(/<div class="vazio">Nenhum modelo atende aos critérios[\s\S]*?<\/div>/, () => painelDiag(B));
-  else if (!linhasBusca().length) h = h.replace(`<div class="vazio">Nenhum modelo passa nos filtros escolhidos.</div>`, () => painelFiltros(B));
-  return h;
-};
 document.addEventListener("click", async e => {
   const t = e.target.closest("[data-bdiag],[data-bquase],[data-acao=bdiag-san],[data-acao=bdiag-santeste],[data-acao=bdiag-limpar]"); if (!t || !S.busca) return;
   e.stopPropagation();
@@ -10667,7 +10477,6 @@ function btCfg() {
   if (!["III", "II", "I"].includes(C.prec.min)) C.prec.min = "II";
   return C;
 }
-const btTxtCfg = C => BT_ORDEM.filter(k => C[k].on).map(k => `${BT_CURTO[k]}${k === "out" ? ` (máx. ${fmtNum(C.out.pct, 0)}%)` : k === "prec" ? ` (mín. ${C.prec.min})` : ""}: ${C[k].acao === "elim" ? "elimina" : "marca"}`).join(" · ");
 
 /* Executa fn com um modelo da busca no lugar do modelo atual (para reaproveitar os pontos máximos e mínimos). */
 function comModeloBT(m, r, e, fn) {
@@ -10710,8 +10519,9 @@ function avaliarBT(B, x, ativos, C) {
   // curva dos pontos máximos e mínimos
   let P = null; if (e && C.curva.on) P = comModeloBT(m, r, e, () => pontosMaxMin());
   if (!P) falha("curva", null, e ? "sem variável de área para projetar" : "sem estimativa do avaliando");
-  else { const gr = P.linhas.filter(p => !p.aval), ni = gr.filter(p => p.instavel).length, av = P.linhas.find(p => p.aval);
-    falha("curva", ni > 0 || !!(av && av.instavel), ni || (av && av.instavel) ? `instável em ${ni} de ${gr.length} ponto(s)${av && av.instavel ? ", inclusive no avaliando" : ""} (amplitude acima de 50% ou limites sem sentido)` : `estável nos ${gr.length} pontos`, { n: ni }); }
+  else { const gr = P.linhas.filter(p => !p.aval), nImp = P.nImp || 0, ni = gr.filter(p => p.instavel).length + nImp, nTot = gr.length + nImp, av = P.linhas.find(p => p.aval);   // v1.32.2: ponto sem valor em R$ (y² negativo etc.) conta como instável
+    if (!nTot) falha("curva", true, "nenhum ponto da projeção tem valor em R$ (estimativa impossível)", { n: 0 });
+    else falha("curva", ni > 0 || !!(av && av.instavel), ni || (av && av.instavel) ? `instável em ${ni} de ${nTot} ponto(s)${av && av.instavel ? ", inclusive no avaliando" : ""} (amplitude acima de 50% ou limites sem sentido${nImp ? `; ${nImp} sem valor em R$` : ""})` : `estável nos ${gr.length} pontos`, { n: ni }); }
   // precisão mínima
   if (!e) falha("prec", C.prec.on ? true : null, e0 && e0.erro ? `sem estimativa: ${e0.erro}` : "sem estimativa do avaliando");
   else falha("prec", ORD_GRAU[e.grauP] < ORD_GRAU[C.prec.min], `amplitude ${fmtPct(e.amp, 1)}: grau ${e.grauP}${C.prec.on ? ` (mínimo pedido: ${C.prec.min})` : ""}`);
@@ -10731,47 +10541,7 @@ function btChip(x) {
   const ch = x.T.chk, el = x.T.elim.map(k => `<span class="chip e" title="${esc(BT_NOME[k] + ": " + ch[k].txt)}">✗ ${esc(BT_CURTO[k])}</span>`), mk = x.T.marc.map(k => `<span class="chip w" title="${esc(BT_NOME[k] + ": " + ch[k].txt)}">! ${esc(BT_CURTO[k])}</span>`);
   return el.length || mk.length ? `<span class="bt-chips">${el.join("")}${mk.join("")}</span>` : `<span class="chip ok" title="Passa em todas as verificações ligadas">✓ passa</span>`;
 }
-function linhasBT() {
-  const B = S.buscaT, F = B.filtros, o = B.ord;
-  const lista = B.todos.filter(x => (F.elim || !x.T.elim.length) && (!F.tudo || (!x.T.elim.length && !x.T.marc.length)) && (!F.valido || estimValida(x)));
-  const val = v => Number.isFinite(v) ? v : null;
-  const ch = (x, c) => c === "marc" ? x.T.elim.length * 100 + x.T.marc.length : c === "fund" ? ORD_GRAU[x.fund] : c === "prec" ? ORD_GRAU[x.prec] : c === "est" ? x.central : c === "r2o" ? ((x.nImp || 0) > 0 ? null : x.R2o) : x[c];
-  return lista.sort((a, b) => { const p = val(ch(a, o.c)), q = val(ch(b, o.c)); if (p === null && q !== null) return 1; if (q === null && p !== null) return -1; if (p !== q && p !== null) return (p > q ? 1 : -1) * o.d; return a.rank - b.rank; });
-}
 function eqBT(B, x) { return `${rotTY(x.ty, nomeCurto(S.dep.col))} = ${B.vcols.filter(c => x.trMap[c]).map(c => rotTX(x.trMap[c], nomeCurto(c))).join(" + ")}`; }
-function abaBuscaT() {
-  const B = btValida(S.buscaT) ? S.buscaT : null;
-  const intro = `<p style="margin:0 0 10px">Como no SisDEA, você recebe a lista de equações; a diferença é que cada uma já vem conferida: primeiro pela NBR 14653-2 (significância, sinal, VIF, mínimo de dados e micronumerosidade, como a Busca avançada) e depois pelos testes dos resíduos, pela extrapolação e pela curva dos pontos máximos e mínimos. No <b>Examinar</b>, você percorre as equações uma a uma, tira ou devolve dados e compara até 3 antes de aplicar.</p>`;
-  if (!B) return `<div class="vazio">${intro}<button class="btn btn-gold" data-acao="bt-buscar">Configurar e buscar</button></div>`;
-  const a = assinBusca(), dadosMud = a !== B.assin && a !== B.assinAplic;
-  const incMud = B.modo === "transf" && B.incAssin !== incBusca(), varsSumiram = B.vcols.some(c => !S.vars.some(v => v.col === c));
-  const bloq = incMud ? "As variáveis do modelo mudaram depois da busca" : varsSumiram ? "Uma variável da busca foi excluída" : "";
-  const banner = dadosMud || bloq ? `<div class="banner w banner-busca"><span class="bi">!</span><div><b>Resultado desatualizado</b><span class="small">${bloq ? bloq + ": Aplicar fica desabilitado." : "Os dados mudaram depois da busca: os números abaixo são os do momento da busca."} Refaça a busca para atualizar.</span></div><button class="btn btn-sm" data-acao="bt-refazer">Refazer</button></div>` : "";
-  const C = B.cfgT, L = linhasBT(), vis = L.slice(0, B.mostrar), o = B.ord;
-  const res = `<div class="barra"><span class="small">${esc(B.modo === "vars" ? "Variáveis e transformações" : "Só transformações")}${B.sanear ? ` · saneamento: ${esc(regraTexto(B.sanear))}` : ""} · significância pelo menos grau ${B.grau}<br>
-      Etapa 1: ${fmtNumAuto(B.testadas)} modelos testados, <b>${fmtNumAuto(B.aprovadas)}</b> aprovados${B.aprovadas > B.todos.length ? ` (guardados os ${fmtNumAuto(B.todos.length)} melhores, que passam pela etapa 2)` : ""}${B.parcial ? " (parcial)" : ""} em ${fmtNum(B.seg1, 1)} s · Etapa 2: ${fmtNum(B.seg2, 1)} s · <b>${fmtNumAuto(B.todos.length - B.nElim)}</b> ficam, <b>${fmtNumAuto(B.nLimpos)}</b> passam em tudo<br><span class="muted">${esc(btTxtCfg(C))}</span></span><span class="sp"></span>
-      <button class="btn btn-sm" data-acao="bt-buscar">Nova busca…</button></div>`;
-  const cont = BT_ORDEM.filter(k => C[k].on && (B.cont[k].e || B.cont[k].w)).map(k => `<span class="chip ${B.cont[k].e ? "e" : "w"}" title="${esc(BT_NOME[k])}">${esc(BT_CURTO[k])}: ${B.cont[k].e ? `${fmtNumAuto(B.cont[k].e)} eliminado(s)` : `${fmtNumAuto(B.cont[k].w)} marcado(s)`}</span>`).join(" ");
-  const fil = (k, t) => `<button class="fil ${B.filtros[k] ? "on" : ""}" data-btfil="${k}" aria-pressed="${!!B.filtros[k]}">${t}</button>`;
-  const nInval = B.todos.filter(x => !estimValida(x)).length;
-  const filtros = `<div class="barra filtros" role="group" aria-label="Filtros"><span class="small muted">Mostrar:</span>${fil("tudo", `Só os que passam em tudo (${fmtNumAuto(B.nLimpos)})`)}${B.nElim ? fil("elim", `Também os eliminados (${fmtNumAuto(B.nElim)})`) : ""}${nInval ? fil("valido", "Só estimativas válidas em R$") : ""}<span class="sp"></span><span class="small muted">${L.length !== B.todos.length ? `mostrando ${fmtNumAuto(L.length)} de ${fmtNumAuto(B.todos.length)}` : ""}</span></div>
-    ${cont ? `<div class="barra" style="gap:6px"><span class="small muted">Na etapa 2:</span>${cont}</div>` : ""}`;
-  const th = (c, t, cls = "r", tit = "") => `<th class="${cls}" data-btord="${c}" tabindex="0" title="${esc(tit || "Ordenar por " + t)}" aria-sort="${o.c === c ? (o.d > 0 ? "ascending" : "descending") : "none"}">${esc(t)}<span class="ord-seta">${o.c === c ? (o.d > 0 ? "▲" : "▼") : ""}</span></th>`;
-  const cel = x => `<tr class="${x.T.elim.length ? "bt-elim" : ""}"><td class="muted">${x.rank}</td><td class="mono bt-eq" title="${esc(eqBT(B, x))}">${esc(eqBT(B, x))}</td><td>${btChip(x)}</td>${B.sanear ? `<td class="r">${x.nExcl || '<span class="muted">0</span>'}</td>` : ""}
-      <td class="r"><b>${fmtNum(x.R2aj, 4)}</b></td><td class="r">${fmtR2o(x)}</td><td class="r" title="Pior significância: ${esc(x.pior)}">${fmtP(x.pmax)}</td>
-      <td class="r">${x.est ? fmtV(x.central) : "—"}${x.extrap ? '<span class="pior ex">extrapola</span>' : ""}</td><td class="r">${x.est ? fmtPct(x.amp, 1) : "—"}</td>
-      <td class="c"><span class="gr g${ORD_GRAU[x.fund]}">${x.fund}</span></td><td class="c"><span class="gr g${ORD_GRAU[x.prec]}">${x.prec}</span></td>
-      <td class="nowrap bt-fx"><button class="btn btn-sm btn-primary" data-btexam="${x.id}">Examinar</button></td></tr>`;
-  const cab = `<tr><th>#</th><th>Equação</th>${th("marc", "Testes", "", "Ordenar pelos testes: os que passam em tudo primeiro")}${B.sanear ? th("nExcl", "Excl.", "r", "Dados excluídos pelo saneamento") : ""}${th("R2aj", "R² aj.")}${th("r2o", "R² R$")}${th("pmax", "Maior signif.")}${th("est", "Estimativa")}${th("amp", "Amplitude")}${th("fund", "Fund.", "c")}${th("prec", "Prec.", "c")}<th class="bt-fx"></th></tr>`;
-  let corpo;
-  if (!B.todos.length) corpo = `<div class="vazio"><p style="margin:0 0 10px"><b>Nenhum modelo passou na etapa 1</b> (critérios da NBR 14653-2). A Busca avançada mostra onde os modelos caíram e o que liberaria modelos.</p><button class="btn btn-gold" data-acao="bt-diag">Ver o diagnóstico na Busca avançada</button></div>`;
-  else if (!vis.length) corpo = `<div class="vazio"><p style="margin:0 0 8px">${B.nElim === B.todos.length ? `<b>Todos os ${fmtNumAuto(B.todos.length)} modelos aprovados na etapa 1 foram eliminados na etapa 2.</b> Veja acima o que eliminou; troque essa verificação para “Só marcar” numa nova busca, ou mostre os eliminados para examinar.` : "Nenhum modelo nos filtros escolhidos."}</p>
-      ${B.nElim ? `<button class="btn btn-sm" data-btfil="elim">Mostrar os eliminados</button>` : ""} <button class="btn btn-sm" data-acao="bt-limpar">Mostrar todos</button></div>`;
-  else corpo = `<div class="tbl-wrap bt-wrap"><table class="tbl tbl-bt"><thead>${cab}</thead><tbody>${vis.map(cel).join("")}</tbody></table></div>
-      ${L.length > vis.length ? `<div class="barra"><button class="btn btn-sm" data-acao="bt-mais">Mostrar mais ${Math.min(BUSCA_PAGINA, L.length - vis.length)}</button><span class="small muted">mostrando ${vis.length} de ${fmtNumAuto(L.length)}</span></div>` : ""}`;
-  return `${banner}${res}${painelCompBT(B, bloq)}${filtros}${corpo}
-    <p class="small muted" style="margin:0">✗ = eliminou o modelo (só aparece com “Também os eliminados”); ! = só marcado. Passe o mouse sobre um aviso para ver o número. A ordem padrão põe primeiro os que passam em tudo e, entre eles, a ordem da busca. No Examinar, tirar ou devolver dados vale só para aquela equação até você clicar em Aplicar.</p>`;
-}
 /* ------------------------------ Comparar ------------------------------ */
 function painelCompBT(B, bloq) {
   if (!B.comp.length) return "";
@@ -10875,7 +10645,13 @@ function guardarCompBT(B, x, at) {
   B.comp.push({ rot: letra, id: x.id, ativos: [...at] });
   desenhar(false); ui.toast(`Equação #${x.rank} guardada como ${letra} para comparar.`);
 }
-function aplicarBT(B, x, at) {
+async function aplicarBT(B, x, at) {
+  if (x && x.nivel1 && x.fal) {   // v1.15: equação do nível 1 que não atende à NBR: confirmar (v1.32.1 E1: antes um invólucro)
+    const f = nbrFalhasU(B, x);
+    const ok = await ui.modal("Aplicar um modelo que não atende à NBR?", `<p style="margin:0 0 6px">Esta equação é do nível 1 (Todas as equações) e não atende aos critérios escolhidos na busca:</p><ul style="margin:0 0 6px">${f.map(t => `<li>${esc(t)}</li>`).join("")}</ul><p class="small muted" style="margin:0">Ela vai para o modelo e o Diagnóstico mostra os problemas. Ctrl+Z desfaz.</p>`,
+      [{ txt: "Cancelar", cls: "btn-ghost", valor: false }, { txt: "Aplicar mesmo assim", cls: "btn-primary", valor: true }]);
+    if (!ok) return desenhar(false);
+  }
   if (B.vcols.some(c => !S.vars.some(v => v.col === c))) return ui.toast("Uma variável da busca foi excluída. Refaça a busca.", "e");
   const A = avaliarBT(B, x, at); if (A.erro) return ui.toast("Esse modelo não pode ser calculado com esses dados.", "e");
   const base = ativosIniBT(B, x), A0 = avaliarBT(B, x, base), mt0 = A0.erro ? null : metricasSan(A0.r), idx0 = new Map(); if (!A0.erro) A0.r.lin.forEach((l, i) => idx0.set(l._k, i));
@@ -10894,15 +10670,6 @@ function aplicarBT(B, x, at) {
 }
 
 /* ------------------------------ Integração ------------------------------ */
-const desenharAbas1138 = desenharAbas;
-desenharAbas = function () {
-  if (S.aba !== "buscat") { desenharAbas1138(); const t = $("#tab-buscat"); if (t) { $$(".bdg", t).forEach(x => x.remove()); if (btValida(S.buscaT)) t.insertAdjacentHTML("beforeend", `<span class="bdg">${S.buscaT.todos.length - S.buscaT.nElim}</span>`); } return; }
-  S.aba = "busca"; try { desenharAbas1138(); } finally { S.aba = "buscat"; }
-  document.body.classList.remove("busca-cheia");
-  $$("#abas .aba").forEach(b => { const on = b.dataset.aba === "buscat"; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); });
-  const t = $("#tab-buscat"); if (t) { $$(".bdg", t).forEach(x => x.remove()); if (btValida(S.buscaT)) t.insertAdjacentHTML("beforeend", `<span class="bdg">${S.buscaT.todos.length - S.buscaT.nElim}</span>`); }
-  const el = $("#aba-conteudo"); el.setAttribute("aria-labelledby", "tab-buscat"); el.innerHTML = abaBuscaT(); ligarDicas(el);
-};
 document.addEventListener("click", e => {
   const t = e.target.closest("[data-acao^=bt-],[data-btfil],[data-btord],[data-btexam],[data-btcexam],[data-btcapl],[data-btcrem]"); if (!t || t.closest(".modal-bg")) return;
   e.stopImmediatePropagation(); e.preventDefault();
@@ -10910,7 +10677,6 @@ document.addEventListener("click", e => {
   if (a === "bt-buscar") return abrirBusca();
   if (a === "bt-refazer") { if (!B) return abrirBusca(); return executarBusca(B.op); }
   if (a === "bt-completa") { if (!B) return abrirBusca(); return executarBusca({ ...B.op, estrategia: "exaustiva" }); }   // v1.23.0 (C2)
-  if (a === "bt-diag") { if (!B) return; S.buscaDestino = ""; return executarBusca(B.op); }
   if (!btValida(B)) return;
   if (t.dataset.btfil) { const k = t.dataset.btfil; B.filtros[k] = !B.filtros[k]; B.mostrar = BUSCA_PAGINA; return desenhar(false); }
   if (a === "bt-limpar") { B.filtros = { tudo: false, valido: false, elim: true }; B.mostrar = BUSCA_PAGINA; return desenhar(false); }
@@ -10959,13 +10725,6 @@ function lerTestesU(b) {
   const N = btCfg(); BT_ORDEM.forEach(k => { const on = $(`[data-bton="${k}"]`, b), ac = $(`[data-btacao="${k}"]`, b); if (on) N[k].on = on.checked; if (ac) N[k].acao = ac.value; });
   const op = $("#bt-outpct", b), pm = $("#bt-precmin", b); if (op) N.out.pct = Math.min(50, Math.max(1, numIn(op.value, 5))); if (pm) N.prec.min = pm.value; lsSet("buscaTestesCfg", N);
 }
-const abrirBusca1140 = abrirBusca;
-abrirBusca = function () {
-  const pr = abrirBusca1140();
-  const b = ui.modalEl; if (!b || !$("#b-conta", b)) return pr;
-  try { abasDialogoU(b); } catch (e) { console.warn(e); }
-  return pr;
-};
 function abasDialogoU(b) {
   $("header h3", b).textContent = "Busca de Modelos";
   const mb = $(".mb", b), p0 = $(":scope > p.small", mb);
@@ -11019,7 +10778,55 @@ function detalharU(x0, M, op, nivel) {
 const cmpOrdemU = op => (a, b) => (op.sanear && op.menosExcl && a.nExcl !== b.nExcl) ? a.nExcl - b.nExcl
   : op.ordem === "AIC" ? a.aic - b.aic : op.ordem === "BIC" ? a.bic - b.bic : op.ordem === "R2o" ? cmpR2o(a, b)
   : op.ordem === "R2" ? b.R2 - a.R2 : op.ordem === "F" ? b.F - a.F : op.ordem === "SIG" ? (a.pF - b.pF) || (b.F - a.F) : b.R2aj - a.R2aj;
-async function executarBuscaU(op, P) {
+/* v1.32.1 (C4): detalhamento (detalharU) + verificações do nível 3 (avaliarBT) de uma equação. Roda igual na tela e no Worker. */
+function detalharItem(x0, nivel, M, op, C, Bw) {
+  const x = detalharU(x0, M, op, nivel); if (!x) return null;
+  if (nivel === 2) {
+    const A = avaliarBT(Bw, x, ativosIniBT(Bw, x), C);
+    /* o resultado fica em _T e vira x.T só depois de id/rank/temCrit, na mesma ordem de campos de antes (projeto .inferencia byte a byte igual) */
+    if (A.erro) x._T = { erro: A.erro, elim: ["erro"], marc: [], chk: {} };
+    else { x._T = { chk: A.chk, elim: A.elim, marc: A.marc, fund: A.fund, prec: A.prec, central: A.central, amp: A.amp }; x.fund = A.fund; x.prec = A.prec; }
+  }
+  return x;
+}
+/* v1.32.1 (C4): o que os Workers recebem além do código: metadados da busca, opções, verificações e o pedaço de S que o núcleo lê. */
+function contextoDetalhar(M, op, C) {
+  catAtual();   // garante S.cat antes de copiar (na tela, a primeira projeção dos pontos máximos e mínimos faria o mesmo)
+  const S0 = { dep: { ...S.dep }, dados: { aval: S.dados.aval, linhas: S.dados.linhas, cols: S.dados.cols }, vars: S.vars, crit: S.crit, cat: S.cat, base: S.base, mult: S.mult, areaRazao: S.areaRazao,
+    ref: S.ref && S.ref.curto ? { curto: S.ref.curto } : null, r: null, est: null };
+  return { M: { ys: M.ys, vlist: M.vlist, colVar: M.colVar, colT: M.colT, linA: M.linA }, op, C, S: S0 };
+}
+/* v1.32.1 (C4): detalha e testa as equações nos Workers (uma a cada núcleo, por rodízio); sem Workers, na tela, com pausas. */
+async function detalharEmWorkers(itens, ctx, onProg) {
+  const W = S.forcarTela || !itens.length ? 0 : Math.min(nucleos(), Math.max(1, Math.ceil(itens.length / 40)));
+  if (W) {
+    let url = ""; const ws = [];
+    try {
+      url = URL.createObjectURL(new Blob([fonteNucleoDetalhar()], { type: "text/javascript" }));
+      for (let w = 0; w < W; w++) ws.push(new Worker(url));
+      const res = new Array(itens.length), prog = new Array(W).fill(0), soma = () => prog.reduce((s, v) => s + v, 0);
+      await Promise.all(ws.map((x, w) => new Promise((ok, rej) => {
+        const idx = itens.map((_, i) => i).filter(i => i % W === w);
+        x.onmessage = ev => { const d = ev.data;
+          if (d.tipo === "prog") { prog[w] = d.feitos; onProg(soma()); }
+          else if (d.tipo === "fim") { d.res.forEach((r, j) => { res[idx[j]] = r; }); prog[w] = idx.length; onProg(soma()); ok(); }
+          else if (d.tipo === "erro") rej(new Error(d.msg)); };
+        x.onerror = ev => { if (ev && ev.preventDefault) ev.preventDefault(); rej(new Error((ev && ev.message) || "worker")); };
+        x.postMessage({ tipo: "detalhar", ctx, itens: idx.map(i => itens[i]) });
+      })));
+      return res;
+    } catch (e) { console.warn("Busca: detalhamento nos workers indisponível, rodando na tela.", e); }
+    finally { ws.forEach(x => x.terminate()); if (url) URL.revokeObjectURL(url); }
+  }
+  const M = ctx.M, Bw = { vlist: M.vlist, linA: M.linA }, res = [];
+  for (let i = 0; i < itens.length; i++) {
+    res.push(detalharItem(itens[i].x0, itens[i].nivel, M, ctx.op, ctx.C, Bw));
+    if (i % 60 === 59) { onProg(i + 1); await new Promise(r => setTimeout(r, 0)); }
+  }
+  return res;
+}
+/* v1.32.1 (E1): declaração única da execução (a v0.7.0 e o elo executarBusca → executarBuscaU saíram). */
+async function executarBusca(op, P) {
   if (!P) P = planejarBusca(op);
   if (P.erro) return ui.aviso("Busca de Modelos", `<p>${esc(P.erro)}</p>`);
   const C = btCfg(), cfg = { ...P.cfg, todas: true };
@@ -11040,14 +10847,14 @@ async function executarBuscaU(op, P) {
   const t1 = performance.now();
   $(".prog-box b", prog).textContent = "Calculando estimativas, graus e testes…"; $("#pb").style.width = "0%"; $("#pc").hidden = true;
   await new Promise(res => setTimeout(res, 0));
-  const M = P.meta, todos = [], todos1 = [], tot = R.top.length + R.topT.length; let feito = 0;
-  const passo = async () => { if (++feito % 120 === 0) { $("#pb").style.width = (feito / Math.max(1, tot) * 60) + "%"; $("#ps").textContent = `${fmtNumAuto(feito)} de ${fmtNumAuto(tot)} equações detalhadas`; await new Promise(res => setTimeout(res, 0)); } };
-  let nNaoRecalc = 0;   // v1.22.1 (C12): equações aprovadas pelo motor que regressao() não conseguiu recalcular
-  for (const x0 of R.top) { const x = detalharU(x0, M, op, 2); if (x) todos.push(x); else nNaoRecalc++; await passo(); }
-  for (const x0 of R.topT) { const x = detalharU(x0, M, op, 1); if (x) todos1.push(x); else nNaoRecalc++; await passo(); }
+  const M = P.meta, itens = [...R.top.map(x0 => ({ x0, nivel: 2 })), ...R.topT.map(x0 => ({ x0, nivel: 1 }))], tot = itens.length;
+  /* v1.32.1 (C4): detalhamento e testes nos Workers, em paralelo (antes, na tela, equação por equação, em duas passadas) */
+  const det = await detalharEmWorkers(itens, contextoDetalhar(M, op, C), feito => { $("#pb").style.width = (feito / Math.max(1, tot) * 100) + "%"; $("#ps").textContent = `${fmtNumAuto(feito)} de ${fmtNumAuto(tot)} equações detalhadas e testadas`; });
+  const todos = [], todos1 = []; let nNaoRecalc = 0;   // v1.22.1 (C12): equações aprovadas pelo motor que regressao() não conseguiu recalcular
+  det.forEach((x, i) => { if (!x) nNaoRecalc++; else if (itens[i].nivel === 2) todos.push(x); else todos1.push(x); });
   if (nNaoRecalc) ui.toast(`${nNaoRecalc} equação(ões) aprovada(s) não puderam ser recalculadas e ficaram fora da lista.`, "e");
   const cmpF = cmpOrdemU(op);
-  todos.sort(cmpF); todos.forEach((x, i) => { x.id = i; x.rank = i + 1; x.temCrit = x.ty === "LN_Y"; });
+  todos.sort(cmpF); todos.forEach((x, i) => { x.id = i; x.rank = i + 1; x.temCrit = x.ty === "LN_Y"; x.T = x._T; delete x._T; });
   todos1.sort(cmpOrdemU({ ...op, sanear: null })); todos1.forEach((x, i) => { x.id = 100000 + i; x.rank = i + 1; x.temCrit = x.ty === "LN_Y"; });
   const B = { v: 7, v15: true, todos, todos1, testadas: R.feitos, calc: R.calc, regs: R.regs, aprovadas: R.aprov, total: P.total, grau: op.grau, parcial: R.parcial || parou,
     /* v1.23.0 (C1/C2): estratégia, motivo e sorteio gravados. v1.26.0 (C14): o comentário ficava no meio da linha e engolia sanear/ordem/menosExcl/vifMax. */
@@ -11056,15 +10863,6 @@ async function executarBuscaU(op, P) {
     ativosBase: new Map(S.dados.linhas.map(l => [l._k, l.ativo])), assin: assinBusca(), incAssin: incBusca(), assinAplic: null, dadosRef: S.dados,
     ord: { c: "R2aj", d: -1 }, filtros: { p3: false, f2: false, semEx: false, semExcl: false, semOut: false, valido: true }, mostrar: BUSCA_PAGINA,
     op, cfgT: C, comp: [], cont: {}, exAt: {}, nivel: 2, ordU: { c: "rank", d: 1 }, fuN: { 1: { valido: false, semEx: false, p3: false, f2: false }, 2: { valido: true, semEx: false, p3: false, f2: false }, 3: { valido: true, semEx: false, p3: false, f2: false } }, hist: R.hist };   // nível 1 sem filtros, como no SisDEA
-  $(".prog-box b", prog).textContent = "Testes do nível 3…";
-  const tE = performance.now();
-  for (let i = 0; i < todos.length; i++) {
-    const x = todos[i], A = avaliarBT(B, x, ativosIniBT(B, x), C);
-    if (A.erro) { x.T = { erro: A.erro, elim: ["erro"], marc: [], chk: {} }; continue; }
-    x.T = { chk: A.chk, elim: A.elim, marc: A.marc, fund: A.fund, prec: A.prec, central: A.central, amp: A.amp };
-    x.fund = A.fund; x.prec = A.prec;
-    if (i % 60 === 59) { $("#pb").style.width = (60 + (i + 1) / todos.length * 40) + "%"; $("#ps").textContent = `${fmtNumAuto(i + 1)} de ${fmtNumAuto(todos.length)} testados`; await new Promise(res => setTimeout(res, 0)); }
-  }
   prog.remove();
   B.seg = (t1 - t0) / 1000; B.seg2 = (performance.now() - t1) / 1000;
   BT_ORDEM.forEach(k => { B.cont[k] = { e: todos.filter(x => x.T.elim.includes(k)).length, w: todos.filter(x => x.T.marc.includes(k)).length }; });
@@ -11073,7 +10871,6 @@ async function executarBuscaU(op, P) {
   S.busca = S.buscaT = B; S.tela = "explorar"; S.aba = "busca"; desenhar(false);
   if (!todos.length && !op.sanear && B.diag && !parou) { B.diag.san = await testeSaneamento(op, false); if (S.busca === B) desenhar(false); }
 }
-executarBusca = function (op, P) { return executarBuscaU(op, P); };
 
 /* ------------------------------ Lista do nível escolhido ------------------------------ */
 /* O que o modelo do nível 1 não atende na NBR (calculado só para as linhas mostradas). */
@@ -11091,84 +10888,33 @@ function nbrFalhasU(B, x) {
   return (x.nbr = out);
 }
 function listaU(B) {
-  const n = B.nivel, F = B.fuN[n], o = B.ordU;
+  const n = B.nivel, F = B.fuN[n], o0 = B.ordU;
+  /* v1.32.1 (E1): a ordem pelas colunas da v1.16 (p de cada variável, transformação de Y, AIC, BIC, VIF, estabilidade) era um invólucro; agora aqui */
+  const extra = !!(o0 && (o0.c.startsWith("p:") || o0.c === "ty" || ["aic", "bic", "vif", "estab"].includes(o0.c)));
+  const o = extra ? { c: "rank", d: 1 } : o0;
   let L = n === 1 ? B.todos1 : n === 2 ? B.todos : B.todos.filter(x => !x.T.elim.length);
   L = L.filter(x => (!F.valido || estimValida(x)) && (!F.semEx || (x.est && !x.extrap)) && (!F.p3 || x.prec === "III") && (!F.f2 || ORD_GRAU[x.fund] >= 2));
   const Fx = faixaAtual(); if (faixaAtiva(Fx)) L = L.filter(x => x.est && Number.isFinite(x.central) && x.central >= Fx.lo - 1e-9 && x.central <= Fx.hi + 1e-9);
   const val = v => Number.isFinite(v) ? v : null;
   const ch = (x, c) => c === "rank" ? x.rank : c === "sit" ? (n === 1 ? (x.fal ? 1 : 0) : (x.T ? x.T.elim.length * 100 + x.T.marc.length : 0)) : c === "fund" ? ORD_GRAU[x.fund] : c === "prec" ? ORD_GRAU[x.prec]
     : c === "est" ? x.central : c === "r2o" ? ((x.nImp || 0) > 0 ? null : x.R2o) : x[c];
-  return L.slice().sort((a, b) => { const p = val(ch(a, o.c)), q = val(ch(b, o.c)); if (p === null && q !== null) return 1; if (q === null && p !== null) return -1; if (p !== q && p !== null) return (p > q ? 1 : -1) * o.d; return a.rank - b.rank; });
+  L = L.slice().sort((a, b) => { const p = val(ch(a, o.c)), q = val(ch(b, o.c)); if (p === null && q !== null) return 1; if (q === null && p !== null) return -1; if (p !== q && p !== null) return (p > q ? 1 : -1) * o.d; return a.rank - b.rank; });
+  if (!extra) return L;
+  const ch2 = x => o0.c === "ty" ? ORDEM_TY.indexOf(x.ty) : o0.c.startsWith("p:") ? (x.pv || {})[o0.c.slice(2)] : x[o0.c];
+  return L.slice().sort((a, b) => { const p = val(ch2(a)), q = val(ch2(b)); if (p === null && q !== null) return 1; if (q === null && p !== null) return -1; if (p !== q && p !== null) return (p > q ? 1 : -1) * o0.d; return a.rank - b.rank; });
 }
-linhasBT = function () { const B = S.busca; return B && B.v15 ? listaU(B) : []; };
+function linhasBT() { const B = S.busca; return B && B.v15 ? listaU(B) : []; }   // v1.32.1 (E1): declaração única (a da v1.14 saiu)
 function chipNivel1U(B, x) {
   if (!x.fal) return `<span class="chip ok" title="Atende aos critérios da NBR escolhidos na busca">✓ atende</span>`;
   const f = nbrFalhasU(B, x), vis = f.slice(0, 2).map(t => `<span class="chip e">✗ ${esc(t)}</span>`).join("");
   return `<span class="bt-chips" title="${esc("Não atende: " + f.join("; "))}">${vis || '<span class="chip e">✗ não atende</span>'}${f.length > 2 ? `<span class="chip e">+${f.length - 2}</span>` : ""}</span>`;
 }
-function funilU(B) {
-  const n1 = B.calc, n2 = B.aprovadas, n3 = B.todos.length - B.nElim, lim = BUSCA_LIMITE;
-  const caixa = (k, tit, q, sub) => `<button type="button" class="bu-caixa ${B.nivel === k ? "on" : ""}" data-bunivel="${k}" aria-pressed="${B.nivel === k}"><span class="small">${k} · ${tit}</span><b>${fmtNumAuto(q)}</b><span class="small muted">${sub || ""}</span></button>`;
-  const op = B.op, g = GI[op.grau] ?? 1, H = B.hist || {}, cnt = bit => { let s = 0; for (const k in H) if (+k & bit) s += H[k]; return s; };
-  const cr = [[BIT_T[g], "t"], [BIT_F[g], "F"]]; if (op.sinal) cr.push([BIT_SIN, "sinal"]); if (op.vifMax === 5) cr.push([BIT_V5, "VIF"]); else if (op.vifMax === 10) cr.push([BIT_V10, "VIF"]);
-  if (op.nMin) { cr.push([BIT_NMIN, "mínimo de dados"]); cr.push([BIT_MICRO, "micronumerosidade"]); }
-  const caiu12 = cr.map(([b, t]) => [t, cnt(b)]).filter(c => c[1]).map(([t, q]) => `${t} ${fmtNumAuto(q)}`).join(" · ");
-  const caiu23 = BT_ORDEM.filter(k => B.cont[k] && B.cont[k].e).map(k => `${BT_CURTO[k]} ${fmtNumAuto(B.cont[k].e)}`).join(" · ");
-  const marc = BT_ORDEM.filter(k => B.cont[k] && B.cont[k].w).map(k => `${BT_CURTO[k]} ${fmtNumAuto(B.cont[k].w)}`).join(" · ");
-  return `<div class="bu-funil" role="group" aria-label="Nível da lista">
-      ${caixa(1, "Todas as equações", n1, n1 > B.todos1.length ? `${fmtNumAuto(B.todos1.length)} guardadas` : "sem restrição")}<span class="bu-seta" aria-hidden="true">→</span>
-      ${caixa(2, "Atendem à NBR", n2, n2 > B.todos.length ? `${fmtNumAuto(B.todos.length)} guardadas` : B.sanear ? `pelo menos grau ${B.grau}, com saneamento` : `pelo menos grau ${B.grau}`)}<span class="bu-seta" aria-hidden="true">→</span>
-      ${caixa(3, "Passam nos testes", n3, `${fmtNumAuto(B.nLimpos)} sem nenhum aviso`)}</div>
-    <p class="small muted bu-caiu">${caiu12 ? `Não atendem à NBR (um modelo pode cair em mais de um critério): ${esc(caiu12)}.` : ""}${caiu23 ? ` Eliminadas nos testes: ${esc(caiu23)}.` : ""}${marc ? ` Só marcadas: ${esc(marc)}.` : ""}${B.sanear ? ` <b>Níveis 2 e 3 com saneamento (${esc(regraTexto(B.sanear))}); nível 1 com todos os dados.</b>` : ""}</p>`;
-}
-function abaBuscaU(B) {
-  const a = assinBusca(), dadosMud = a !== B.assin && a !== B.assinAplic;
-  const incMud = B.modo === "transf" && B.incAssin !== incBusca(), varsSumiram = B.vcols.some(c => !S.vars.some(v => v.col === c));
-  const bloq = incMud ? "As variáveis do modelo mudaram depois da busca" : varsSumiram ? "Uma variável da busca foi excluída" : "";
-  const banner = dadosMud || bloq ? `<div class="banner w banner-busca"><span class="bi">!</span><div><b>Resultado desatualizado</b><span class="small">${bloq ? bloq + ": Aplicar fica desabilitado." : "Os dados mudaram depois da busca: os números abaixo são os do momento da busca."} Refaça a busca para atualizar.</span></div><button class="btn btn-sm" data-acao="bt-refazer">Refazer</button></div>` : "";
-  const estrTxt = estrTexto(B);   // v1.23.0 (C2/C6)
-  const ordNome = (ORDEM_U.find(o => o[0] === B.ordem) || ["", "R² ajustado"])[1];
-  const topo = `<div class="barra"><span class="small">${esc(B.modo === "vars" ? "Variáveis e transformações" : "Só transformações")} · ${esc(estrTxt)} · significância pelo menos grau ${B.grau}${B.op.sinal ? " · sinal" : ""}${B.vifMax ? ` · VIF ≤ ${B.vifMax}` : ""} · ordem: ${esc(ordNome)}<br><span class="muted">${fmtNumAuto(B.testadas)} equações em ${fmtNum(B.seg, 1)} s${B.nucleos ? ` em ${B.nucleos} núcleo(s)` : " na tela"} · detalhes e testes em ${fmtNum(B.seg2, 1)} s${B.parcial ? " · <b>busca interrompida (parcial)</b>" : ""}</span></span><span class="sp"></span>
-      <button class="btn btn-sm" data-acao="bcheia" title="Tela cheia (Esc volta)">${S.buscaCheia ? "Sair da tela cheia" : "⤢ Tela cheia"}</button>${B.reduzida ? `<button class="btn btn-sm" data-acao="bt-completa" title="Repete a busca com todas as combinações">Refazer com busca completa</button>` : ""}<button class="btn btn-sm" data-acao="busca">Nova busca…</button></div>`;
-  const L = listaU(B), vis = L.slice(0, B.mostrar), o = B.ordU, nv = B.nivel, san = !!B.sanear && nv > 1;
-  const base = nv === 1 ? B.todos1 : nv === 2 ? B.todos : B.todos.filter(x => !x.T.elim.length);
-  const FU = B.fuN[nv], fil = (k, t) => `<button class="fil ${FU[k] ? "on" : ""}" data-bufil="${k}" aria-pressed="${!!FU[k]}">${t}</button>`;
-  const filtros = `<div class="barra filtros" role="group" aria-label="Filtros"><span class="small muted">Filtrar:</span>${fil("valido", "Só estimativas válidas em R$")}${fil("semEx", "Sem extrapolação")}${fil("f2", "Fundamentação ≥ II")}${fil("p3", "Só precisão III")}<span class="sp"></span><span class="small muted">${L.length !== base.length ? `mostrando ${fmtNumAuto(L.length)} de ${fmtNumAuto(base.length)}` : ""}</span></div>`;
-  const th = (c, t, cls = "r", tit = "") => `<th class="${cls}" data-buord="${c}" tabindex="0" title="${esc(tit || "Ordenar por " + t)}" aria-sort="${o.c === c ? (o.d > 0 ? "ascending" : "descending") : "none"}">${esc(t)}<span class="ord-seta">${o.c === c ? (o.d > 0 ? "▲" : "▼") : ""}</span></th>`;
-  const cel = x => `<tr class="${nv === 2 && x.T && x.T.elim.length ? "bt-elim" : ""}"><td class="muted">${x.rank}</td><td class="mono bt-eq" title="${esc(eqBT(B, x))}">${esc(eqBT(B, x))}</td><td>${nv === 1 ? chipNivel1U(B, x) : btChip(x)}</td>${san ? `<td class="r">${x.nExcl || '<span class="muted">0</span>'}</td>` : ""}
-      <td class="r"><b>${fmtNum(x.R2aj, 4)}</b></td><td class="r">${fmtNum(x.R2, 4)}</td><td class="r">${fmtNum(x.F, 2)}</td><td class="r">${fmtP(x.pF)}</td><td class="r" title="Pior significância: ${esc(x.pior)}">${fmtP(x.pmax)}</td><td class="r">${fmtR2o(x)}</td>
-      <td class="r">${x.est ? fmtV(x.central) : "—"}${x.extrap ? '<span class="pior ex">extrapola</span>' : ""}</td><td class="r">${x.est ? fmtPct(x.amp, 1) : "—"}</td>
-      <td class="c"><span class="gr g${ORD_GRAU[x.fund]}">${x.fund}</span></td><td class="c"><span class="gr g${ORD_GRAU[x.prec]}">${x.prec}</span></td>
-      <td class="nowrap bt-fx"><button class="btn btn-sm btn-primary" data-btexam="${x.id}">Examinar</button></td></tr>`;
-  const cab = `<tr>${th("rank", "#", "", "Posição pela ordem da busca")}<th>Equação</th>${th("sit", nv === 1 ? "NBR" : "Testes", "", nv === 1 ? "Ordenar: as que atendem à NBR primeiro" : "Ordenar: as que passam em tudo primeiro")}${san ? th("nExcl", "Excl.", "r", "Dados excluídos pelo saneamento") : ""}${th("R2aj", "R² aj.")}${th("R2", "R²", "r", "Regressão (R²), como no SisDEA")}${th("F", "F")}${th("pF", "Signif.", "r", "Significância do modelo: p do teste F")}${th("pmax", "Maior p", "r", "Maior p-valor entre os regressores")}${th("r2o", "R² R$", "r", "Estimativa: R² das estimativas em R$")}${th("est", "Estimativa")}${th("amp", "Amplitude")}${th("fund", "Fund.", "c")}${th("prec", "Prec.", "c")}<th class="bt-fx"></th></tr>`;
-  let corpo;
-  if (nv >= 2 && !B.todos.length) corpo = painelDiag(B) + `<p class="small muted" style="margin:6px 0 0">O nível 1 (Todas as equações) continua disponível no funil acima.</p>`;
-  else if (nv === 3 && !base.length) corpo = `<div class="vazio"><p style="margin:0 0 8px"><b>Todos os ${fmtNumAuto(B.todos.length)} modelos do nível 2 foram eliminados nos testes.</b> Veja acima o que eliminou; troque essa verificação para “Só marcar” numa nova busca ou examine os modelos no nível 2.</p><button class="btn btn-sm" data-bunivel="2">Ver o nível 2</button></div>`;
-  else if (!vis.length) corpo = `<div class="vazio"><p style="margin:0 0 8px">Nenhuma equação nos filtros escolhidos.</p><button class="btn btn-sm" data-acao="bu-limpar">Limpar os filtros</button></div>`;
-  else corpo = `<div class="tbl-wrap bt-wrap"><table class="tbl tbl-bt"><thead>${cab}</thead><tbody>${vis.map(cel).join("")}</tbody></table></div>
-      ${L.length > vis.length ? `<div class="barra"><button class="btn btn-sm" data-acao="bu-mais">Mostrar mais ${Math.min(BUSCA_PAGINA, L.length - vis.length)}</button><span class="small muted">mostrando ${vis.length} de ${fmtNumAuto(L.length)}</span></div>` : ""}`;
-  const nota = nv === 1 ? "Nível 1: todas as equações calculáveis, sem restrição e sem saneamento, como no SisDEA. ✗ mostra o que não atende à NBR; dá para examinar e aplicar, com aviso."
-    : nv === 2 ? "Nível 2: as que atendem à NBR. ✗ = seria eliminada nos testes (fica de fora do nível 3); ! = só marcada."
-    : "Nível 3: as que atendem à NBR e passam nas verificações que eliminam; ! = aviso das que só marcam.";
-  return `${banner}${topo}${funilU(B)}${painelCompBT(B, bloq)}${filtros}${corpo}
-    <p class="small muted" style="margin:0">${nota} Clique no título de uma coluna para ordenar. O R² de modelos com transformações diferentes de Y não é diretamente comparável: use o R² R$ para isso. No Examinar, tirar ou devolver dados vale só para aquela equação até Aplicar.</p>`;
-}
-abaBusca = function () {
+/* v1.32.1 (E1): declaração única da aba (as versões v0.4, v0.7.0 e os invólucros v0.5.0, v1.2.1 e v1.13.6 saíram) */
+function abaBusca() {
   const B = S.busca;
   if (B && B.v15 && B.dadosRef === S.dados) return abaBuscaU(B);
   return `<div class="vazio"><p style="margin:0 0 10px">A <b>Busca de Modelos</b> testa as combinações de variáveis e transformações com os dados habilitados e mostra o resultado em três níveis: <b>1 Todas as equações</b> (como o SisDEA e o TS-Sisreg, sem restrição), <b>2 Atendem à NBR 14653-2</b> e <b>3 Passam nos testes</b> (resíduos, extrapolação e curva dos pontos máximos e mínimos). No <b>Examinar</b>, você percorre as equações uma a uma, tira ou devolve dados e compara até 3 antes de aplicar.</p><button class="btn btn-gold" data-acao="busca">Configurar e buscar</button></div>`;
-};
-/* aplicar um modelo do nível 1 que não atende à NBR: com aviso */
-const aplicarBT1140 = aplicarBT;
-aplicarBT = async function (B, x, at) {
-  if (x && x.nivel1 && x.fal) {
-    const f = nbrFalhasU(B, x);
-    const ok = await ui.modal("Aplicar um modelo que não atende à NBR?", `<p style="margin:0 0 6px">Esta equação é do nível 1 (Todas as equações) e não atende aos critérios escolhidos na busca:</p><ul style="margin:0 0 6px">${f.map(t => `<li>${esc(t)}</li>`).join("")}</ul><p class="small muted" style="margin:0">Ela vai para o modelo e o Diagnóstico mostra os problemas. Ctrl+Z desfaz.</p>`,
-      [{ txt: "Cancelar", cls: "btn-ghost", valor: false }, { txt: "Aplicar mesmo assim", cls: "btn-primary", valor: true }]);
-    if (!ok) return desenhar(false);
-  }
-  return aplicarBT1140(B, x, at);
-};
+}
 document.addEventListener("click", e => {
   const t = e.target.closest("[data-bunivel],[data-bufil],[data-buord],[data-acao=bu-mais],[data-acao=bu-limpar]"); if (!t || t.closest(".modal-bg")) return;
   const B = S.busca; if (!B || !B.v15) return;
@@ -11180,8 +10926,6 @@ document.addEventListener("click", e => {
   if (t.dataset.acao === "bu-limpar") { B.fuN[B.nivel] = { valido: false, semEx: false, p3: false, f2: false }; const Fx = faixaAtual(); if (Fx) Fx.on = false; B.mostrar = BUSCA_PAGINA; return desenhar(false); }
 }, true);
 document.addEventListener("keydown", e => { const t = e.target; if ((e.key === "Enter" || e.key === " ") && t.matches && t.matches("[data-buord]")) { e.preventDefault(); t.click(); } });
-const desenharAbas1140 = desenharAbas;
-desenharAbas = function () { if (S.aba === "buscat") S.aba = "busca"; desenharAbas1140(); };
 const abrirAjuda1140 = abrirAjuda;
 abrirAjuda = function () {
   abrirAjuda1140();
@@ -11334,7 +11078,7 @@ function porqueU(B, k) {
   const parcial = B.aprovadas > B.todos.length ? ` <span class="small muted">(entre as ${n(B.todos.length)} guardadas)</span>` : "";
   return `<div class="bu-porq-pan"><b>Por que ${n(B.nElim)} equações não passam do nível 2 para o 3</b>${parcial}${li ? `<ul>${li}</ul>` : `<p class="small muted" style="margin:4px 0 0">Nenhuma foi eliminada.</p>`}<p class="small muted" style="margin:4px 0 0">As verificações em “Só marcar” não tiram a equação do nível 3; para mudar, use Nova busca › Testes.</p></div>`;
 }
-funilU = function (B) {
+function funilU(B) {   // v1.32.1 (E1): declaração única (a da v1.15 saiu)
   const n1 = B.calc, n2 = B.aprovadas, n3 = B.todos.length - B.nElim;
   const caixa = (k, tit, q, sub) => `<button type="button" class="bu-caixa ${B.nivel === k ? "on" : ""}" data-bunivel="${k}" aria-pressed="${B.nivel === k}"><span class="small">${k} · ${tit}</span><b>${fmtNumAuto(q)}</b><span class="small muted">${sub || ""}</span></button>`;
   const seta = (k, q) => q > 0 ? `<button type="button" class="bu-porq" data-buporq="${k}" aria-expanded="${B.porq === k}" title="Ver por que essas equações ficam de fora"><b>−${fmtNumAuto(q)}</b><span>por quê?</span></button>` : `<span class="bu-seta" aria-hidden="true">→</span>`;
@@ -11344,7 +11088,7 @@ funilU = function (B) {
       ${caixa(3, "Passam nos testes", n3, `${fmtNumAuto(B.nLimpos)} sem nenhum aviso`)}</div>
     ${B.porq ? porqueU(B, B.porq) : ""}
     ${B.sanear ? `<p class="small muted bu-caiu"><b>Níveis 2 e 3 com saneamento (${esc(regraTexto(B.sanear))}); nível 1 com todos os dados.</b></p>` : ""}`;
-};
+}
 
 /* colunas de cada modelo */
 function colunasU(B, modo, nv, san) {
@@ -11379,16 +11123,7 @@ function colunasU(B, modo, nv, san) {
   else ks = ["rank", "eq", "sit", ...(san ? ["excl"] : []), "R2aj", "est", "amp", "fund", "prec", "ex"];
   return ks.map(k => k.startsWith("v:") ? vcol(k.slice(2)) : C[k]);
 }
-const listaU1160 = listaU;
-listaU = function (B) {
-  const o = B.ordU;
-  if (!o || !(o.c.startsWith("p:") || o.c === "ty" || ["aic", "bic", "vif", "estab"].includes(o.c))) return listaU1160(B);
-  const L = listaU1160({ ...B, ordU: { c: "rank", d: 1 } });
-  const ch = x => o.c === "ty" ? ORDEM_TY.indexOf(x.ty) : o.c.startsWith("p:") ? (x.pv || {})[o.c.slice(2)] : x[o.c];
-  const val = v => Number.isFinite(v) ? v : null;
-  return L.slice().sort((a, b) => { const p = val(ch(a)), q = val(ch(b)); if (p === null && q !== null) return 1; if (q === null && p !== null) return -1; if (p !== q && p !== null) return (p > q ? 1 : -1) * o.d; return a.rank - b.rank; });
-};
-abaBuscaU = function (B) {
+function abaBuscaU(B) {   // v1.32.1 (E1): declaração única (a da v1.15 saiu)
   const a = assinBusca(), dadosMud = a !== B.assin && a !== B.assinAplic;
   const incMud = B.modo === "transf" && B.incAssin !== incBusca(), varsSumiram = B.vcols.some(c => !S.vars.some(v => v.col === c));
   const bloq = incMud ? "As variáveis do modelo mudaram depois da busca" : varsSumiram ? "Uma variável da busca foi excluída" : "";
@@ -11428,10 +11163,8 @@ abaBuscaU = function (B) {
   const notaCols = modo === "sisdea" ? " Estilo SisDEA: em cada variável, a transformação e o p do t (em vermelho acima do limite do grau); “—” = fora da equação." : "";
   return `${banner}${topo}${funilU(B)}${painelCompBT(B, bloq)}${tb}${pan}${corpo}
     <p class="small muted" style="margin:0">${nota}${notaCols} Clique no título de uma coluna para ordenar. O R² de modelos com transformações diferentes de Y não é diretamente comparável: use o R² R$ para isso. No Examinar, tirar ou devolver dados vale só para aquela equação até Aplicar.</p>`;
-};
+}
 /* a faixa de estimativa entra no painel de filtros (antes, abaixo da barra de filtros) */
-const inserirFaixa1170 = inserirFaixa;
-inserirFaixa = function () { const B = S.busca; if (B && B.v15 && !B.filAberto) return; return inserirFaixa1170(); };
 document.addEventListener("click", e => {
   const t = e.target.closest("[data-acao=bu-filpan],[data-bucols],[data-buporq]"); if (!t || t.closest(".modal-bg")) return;
   const B = S.busca; if (!B || !B.v15) return;
@@ -13342,7 +13075,7 @@ const RA = (() => {
     precisao: [[3, 0.30], [2, 0.40], [1, 0.50]]
   };
   const REGRAS = {
-    impacto_sinal: 0.05, omitida_sig: 0.10, omitida_efeito: 0.05, residuo_forte: 2.5, residuo_freq: [2.0, 0.6], cook: 1.0,
+    alt_sinal_estrito: true, alt_base_obrig: true, impacto_sinal: 0.05, omitida_sig: 0.10, omitida_efeito: 0.05, residuo_forte: 2.5, residuo_freq: [2.0, 0.6], cook: 1.0,
     z_atipico: 3.5, tol_erro: 0.005, premiar_grau_acima: false, normalidade_p: 0.05, homoc_p: 0.05, top_exclusao: 40,
     rodadas_exclusao: 6, limite_ajustes: 30000, refinar_top: 60, avaliar_por_etapa: 300, opcoes: 8, checar_omitidas_max: 300,
     sens_exclusao: 0.10,
@@ -13737,6 +13470,8 @@ const RA = (() => {
     if (!micro.ok) falhas.push("micronumerosidade");
     if (coer.some(x => x.classe === "impedimento")) falhas.push("sinal incoerente com impacto > 5%");
     else if (!original && coer.some(x => x.classe === "a confirmar")) falhas.push("sinal incoerente com impacto > 5% (sinal a confirmar)");
+    if (!original && REGRAS.alt_sinal_estrito && coer.some(x => x.coerente === false && x.classe === "fragilidade")) falhas.push("sinal incoerente com o esperado (impacto até 5%)");   // v1.33.1: a NBR não permite aproveitar
+    { const ab = ctx.base || ctx.areaObrig; if (!original && REGRAS.alt_base_obrig && ab && !spec.some(s => s[0] === ab)) falhas.push("sem a variável base"); }   // v1.33.2: área obrigatória (decisão de 12/10)
     if (!Number.isFinite(erro)) falhas.push("previsão fora da amostra inviável");
     if (gp < 1) falhas.push("precisão abaixo do Grau I");
     c.falhas = falhas; c.grau_decl = ctx.grau;
@@ -14871,6 +14606,898 @@ abrirAjuda = function () {
   ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.31.0:</b> o relatório da Revisão automática mostra a estabilidade do modelo do laudo e das 3 primeiras opções: o valor unitário refeito sem cada dado usado (e os dados que mais o mudam) e a faixa P10 a P90 em 1.000 reamostragens dos dados, com semente fixa (o resultado se repete). Só informa; a escolha do alternativo não mudou.</p>`);
 };
 
+
+
+/* =====================================================================
+   v1.32.0 — (1) equação no topo; (2) criar VT a partir do VU (ou VU a partir do VT), com reconstituição dos valores
+   redondos; (3) categoria da dependente por nome + valores (+ campo do arquivo), perguntando só em conflito;
+   (4) card do avaliando: Enter/Tab passam ao campo seguinte sem fechar a lista nem perder o foco.
+   Decisões de 15/10/2026 (Pedidos_v1.32.0.md). Só acrescenta código: invólucros que chamam a versão anterior.
+   ===================================================================== */
+
+/* ---------- (1) Equação no topo ---------- */
+function equacaoCurta(r, m) {
+  if (!r || r.erro) return "";
+  const f = b => fmtCoef(Math.abs(b), 4, 0);
+  return `${rotTY(m.dep.tr, m.dep.col)} = ${r.b.map((b, i) => i === 0 ? (b < 0 ? "−" : "") + f(b) : ` ${b < 0 ? "−" : "+"} ${f(b)}·${rotTX(m.vars[i - 1].tr, m.vars[i - 1].col)}`).join("")}`;
+}
+const desenharResumo1320 = desenharResumo;
+desenharResumo = function () {
+  desenharResumo1320();
+  const box = $("#resumo"); if (!box) return;
+  box.classList.remove("com-eq");
+  const dest = $("#resumo .rs.dest"); if (!dest || dest.classList.contains("rs-pend") || !S.r || S.r.erro || !S.dados) return;
+  const m = modeloAtual(), curta = equacaoCurta(S.r, m), longa = equacao(S.r, m); if (!curta) return;
+  const html = `<div class="rs rs-eq"><span class="k">Equação</span><button class="rs-eq-t mono" data-eq-copiar title="${esc(longa)} (clique para copiar)">${esc(curta)}</button><button class="btn-link rs-eq-ir" data-aba="resultado">ver em Resultados ›</button></div>`;
+  const selos = $("#resumo .rs-selos");
+  if (selos) selos.insertAdjacentHTML("beforebegin", html); else box.insertAdjacentHTML("beforeend", html);
+  const n = [...box.children].filter(x => x.classList.contains("rs") && !x.classList.contains("dest") && !x.classList.contains("rs-selos") && !x.classList.contains("rs-eq")).length;
+  box.style.setProperty("--eq-n", Math.max(1, n)); box.classList.add("com-eq");
+};
+document.addEventListener("click", async e => {
+  const t = e.target.closest && e.target.closest("[data-eq-copiar]"); if (!t || !S.r || S.r.erro) return;
+  const txt = equacao(S.r, modeloAtual());
+  try { await navigator.clipboard.writeText(txt); ui.toast("Equação copiada."); }
+  catch (er) { const ta = document.createElement("textarea"); ta.value = txt; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); ui.toast("Equação copiada."); } catch (e2) { ui.toast("Não foi possível copiar.", "e"); } ta.remove(); }
+});
+
+/* ---------- (4) Card do avaliando ---------- */
+// O painel é redesenhado inteiro a cada mudança: a lista "fora do modelo" fechava e o foco voltava ao campo antigo.
+// Agora: o recálculo do "change" espera o foco chegar ao campo seguinte; o redesenho guarda e devolve o foco,
+// a posição do cursor, a lista aberta e a rolagem do painel. Enter passa ao campo seguinte (Shift+Enter, ao anterior).
+document.addEventListener("toggle", e => { if (e.target.classList && e.target.classList.contains("av-fora")) S.avForaAberto = e.target.open; }, true);
+document.addEventListener("change", e => {
+  const t = e.target;
+  if (t && t.dataset && t.dataset.aval !== undefined && t.closest && t.closest("#painel")) { e.stopImmediatePropagation(); setTimeout(() => recalcular(true), 0); }
+}, true);
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  if (e.key !== "Enter" || !t || !t.dataset || t.dataset.aval === undefined || !t.closest || !t.closest("#painel")) return;
+  e.preventDefault();
+  const todos = $$("#painel [data-aval]"), i = todos.indexOf(t), prox = todos[e.shiftKey ? i - 1 : i + 1];
+  if (!prox) { t.blur(); return; }
+  const det = prox.closest("details"); if (det && !det.open) { det.open = true; S.avForaAberto = true; }
+  prox.focus(); if (prox.select) prox.select();
+});
+const desenharPainel1320 = desenharPainel;
+desenharPainel = function () {
+  const pn = $("#painel"), at = document.activeElement;
+  const foco = at && at.dataset && at.dataset.aval !== undefined && pn && pn.contains(at) ? { k: at.dataset.aval, a: at.selectionStart, b: at.selectionEnd } : null;
+  const det0 = $("#painel details.av-fora"); if (det0) S.avForaAberto = det0.open;
+  const rol = pn ? pn.scrollTop : 0;
+  desenharPainel1320();
+  const det = $("#painel details.av-fora"); if (det && S.avForaAberto) det.open = true;
+  painelCalcDep();
+  if (foco) {
+    const el = $(`#painel [data-aval="${CSS.escape(foco.k)}"]`);
+    if (el) { const d = el.closest("details"); if (d && !d.open) d.open = true; el.focus({ preventScroll: true }); try { if (foco.a !== null) el.setSelectionRange(foco.a, foco.b); } catch (er) { } }
+  }
+  if (pn) pn.scrollTop = rol;
+};
+
+/* ---------- (2) Criar VT a partir do VU (ou VU a partir do VT) ---------- */
+// S.calcDep = { col, de, base, op: "mult" | "div", catDe, arred, casas, ajustados: [{ id, bruto, valor }], n }
+function casasDe(col) {
+  const v = S.dados.linhas.map(l => l.v[col]).filter(x => Number.isFinite(x) && x !== 0); if (!v.length) return 6;
+  for (let c = 0; c <= 6; c++) { const f = 10 ** c; if (v.every(x => Math.abs(x * f - Math.round(x * f)) < 1e-6 * Math.max(1, Math.abs(x * f)))) return c; }
+  return 7;
+}
+// VT = VU × área, devolvendo o valor redondo que o arredondamento do VU escondeu.
+// Margem = área × meia unidade da última casa do VU; dentro dela, o múltiplo mais redondo (100.000, 10.000, 1.000, 100, 10, 1);
+// trava: só aceita se VT ÷ área, arredondado com as mesmas casas, devolver exatamente o VU do arquivo.
+function vtReconstituido(vu, a, casas) {
+  const bruto = vu * a;
+  if (!(vu > 0 && a > 0) || !(casas >= 0 && casas <= 6)) return bruto;
+  const f = 10 ** casas, alvo = Math.round(vu * f), margem = a * 0.5 / f + 1e-9 * Math.abs(bruto);
+  for (const passo of [100000, 10000, 1000, 100, 10, 1]) {
+    const c = Math.round(bruto / passo) * passo;
+    if (c > 0 && Math.abs(c - bruto) <= margem && Math.round((c / a) * f) === alvo) return c;
+  }
+  return bruto;
+}
+function calcAtualizar() {
+  const C = S.calcDep; if (!C || !S.dados) return;
+  if (!S.dados.cols.includes(C.col)) { if (S.depAlt === C.col) S.depAlt = ""; if (S.dep.col === C.col) S.dep.col = C.de; S.calcDep = null; return; }
+  const aj = []; let n = 0;
+  S.dados.linhas.forEach(l => {
+    const y = l.v[C.de], a = l.v[C.base];
+    if (!Number.isFinite(y) || !(a > 0)) { l.v[C.col] = NaN; return; }
+    n++;
+    if (C.op === "div") { l.v[C.col] = y / a; return; }
+    const bruto = y * a, val = C.arred ? vtReconstituido(y, a, C.casas) : bruto;
+    if (val !== bruto) aj.push({ id: l.id, bruto, valor: val });
+    l.v[C.col] = val;
+  });
+  C.ajustados = aj; C.n = n;
+}
+function calcPode() {
+  if (!S.dados || S.calcDep) return null;
+  const cat = catAtual(), base = S.base;
+  if (!(cat === "unit" || cat === "total") || !base || base === S.dep.col) return null;
+  if (S.depAlt) return null;   // a planilha já trouxe as duas colunas
+  if (!S.dados.linhas.some(l => Number.isFinite(l.v[S.dep.col]) && l.v[base] > 0)) return null;
+  return { cat, base, de: S.dep.col, op: cat === "unit" ? "mult" : "div" };
+}
+function calcCriar() {
+  const P = calcPode(); if (!P) return ui.toast("Escolha antes a categoria (unitário ou total) e a variável base da dependente.", "e");
+  guardar(P.op === "mult" ? "criar VT" : "criar VU");
+  let nome = P.op === "mult" ? `VT calculado (${P.de} × ${P.base})` : `VU calculado (${P.de} ÷ ${P.base})`, k = 2;
+  while (S.dados.cols.includes(nome)) nome = nome.replace(/( \d+)?$/, " " + k++);
+  S.dados.cols.push(nome);
+  S.calcDep = { col: nome, de: P.de, base: P.base, op: P.op, catDe: P.cat, arred: true, casas: P.op === "mult" ? casasDe(P.de) : 0, ajustados: [], n: 0 };
+  S.depAlt = nome;
+  calcAtualizar();
+  const C = S.calcDep, msg = `Coluna “${nome}” calculada pelo revisor (${P.op === "mult" ? `${P.de} × ${P.base}` : `${P.de} ÷ ${P.base}`})${C.ajustados.length ? `: valor redondo reconstituído em ${C.ajustados.length} de ${C.n} dados` : ""}.`;
+  if (!S.avisos) S.avisos = []; S.avisos.push(msg);
+  recalcular(true);
+  ui.toast(`${msg} Para usar, escolha-a como variável dependente.`);
+}
+function calcRemover() {
+  const C = S.calcDep; if (!C) return;
+  if (S.dep.col === C.col) return ui.toast(`Volte a dependente para ${C.de} antes de remover a coluna calculada.`, "e");
+  guardar("remover coluna calculada");
+  S.dados.cols = S.dados.cols.filter(c => c !== C.col); S.dados.linhas.forEach(l => { delete l.v[C.col]; });
+  if (S.depAlt === C.col) S.depAlt = ""; S.calcDep = null;
+  if (S.avisos) S.avisos = S.avisos.filter(t => !t.startsWith(`Coluna “${C.col}”`));
+  recalcular(true);
+}
+function painelCalcDep() {
+  const ed = $("#painel .lv-y + .editor"); if (!ed) return;
+  const C = S.calcDep, P = calcPode();
+  if (C) {
+    const usando = S.dep.col === C.col, rot = C.op === "mult" ? "VT" : "VU", conta = C.op === "mult" ? `${C.de} × ${C.base}` : `${C.de} ÷ ${C.base}`;
+    const lista = C.ajustados.length ? `<details class="calc-aj"><summary>${C.ajustados.length} de ${C.n} dados com o valor redondo reconstituído</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Dado</th><th class="r">${esc(C.de)} × ${esc(C.base)}</th><th class="r">Reconstituído</th></tr></thead><tbody>${C.ajustados.map(a => `<tr><td>${esc(a.id)}</td><td class="r">${fmtNum(a.bruto, 2)}</td><td class="r">${fmtNum(a.valor, 2)}</td></tr>`).join("")}</tbody></table></div></details>` : "";
+    ed.insertAdjacentHTML("beforeend", `<div class="calc-dep"><p class="small" style="margin:0"><span class="tag cat-tag">calculada pelo revisor</span> ${rot} em “${esc(C.col)}” = ${esc(conta)}.${usando ? ` Em uso como dependente; ${esc(C.de)} ficou como a outra dependente.` : " Para usar, escolha-a acima como variável dependente."}</p>
+      ${C.op === "mult" ? `<label class="small calc-arr"><input type="checkbox" data-calc-arred ${C.arred ? "checked" : ""}> Reconstituir o valor redondo que o arredondamento do ${esc(C.de)} (${C.casas <= 6 ? C.casas + " casa(s)" : "sem arredondamento"}) escondeu</label>${lista}` : ""}
+      ${usando ? "" : `<button class="btn-link" data-calc-remover>Remover a coluna calculada</button>`}</div>`);
+  } else if (P) {
+    ed.insertAdjacentHTML("beforeend", `<div class="calc-dep"><button class="btn btn-sm" data-calc-criar>${P.op === "mult" ? `Criar VT (${esc(nomeCurto(P.de))} × ${esc(nomeCurto(P.base))})` : `Criar VU (${esc(nomeCurto(P.de))} ÷ ${esc(nomeCurto(P.base))})`}</button>
+      <span class="small muted">Cria a coluna para todos os dados (também os desabilitados) e a deixa como a outra dependente, para testar o modelo em ${P.op === "mult" ? "valor total" : "valor unitário"}.</span></div>`);
+  }
+}
+document.addEventListener("click", e => {
+  const t = e.target.closest && e.target.closest("[data-calc-criar],[data-calc-remover]"); if (!t) return;
+  if (t.dataset.calcCriar !== undefined) calcCriar(); else calcRemover();
+});
+document.addEventListener("change", e => {
+  const t = e.target; if (!t || !t.dataset || t.dataset.calcArred === undefined || !S.calcDep) return;
+  S.calcDep.arred = t.checked; recalcular(true);
+});
+const recalcular1320 = recalcular;
+recalcular = function (tudo) { if (S.calcDep) calcAtualizar(); return recalcular1320(tudo); };
+const desfazer1320 = desfazer;
+desfazer = function () {
+  const C = S.calcDep, h = S.hist[S.hist.length - 1];
+  /* v1.32.1 (revisão): desfazer a criação com a coluna calculada em uso como dependente: a troca VU ↔ VT não é passo do desfazer; sem voltar
+     a dependente antes, o desfazer original deixava todos os dados "sem valor na dependente" e os desabilitava (modelo com 0 dados),
+     a "outra dependente" apontava para a própria dependente e a categoria ficava a da coluna calculada */
+  if (C && h && h.s && h.s.cols && !h.s.cols.includes(C.col) && S.dep.col === C.col) { S.dep.col = C.de; S.depAlt = ""; S.cat = C.catDe; S.base = C.base; sincronizarCat(); }
+  const x = desfazer1320();
+  if (C && S.dados && !S.dados.cols.includes(C.col)) {   // a criação foi desfeita
+    calcAtualizar();   // zera S.calcDep e devolve a dependente original
+    if (S.depAlt === C.col || S.depAlt === S.dep.col) S.depAlt = "";
+    if (S.dep.col === C.de) { S.cat = C.catDe; S.base = C.base; sincronizarCat(); }
+    recalcular(true);
+  }
+  return x;
+};
+const entrarNoModelo1320 = entrarNoModelo;
+entrarNoModelo = function (conferir, catArq) { S.calcDep = null; S.avForaAberto = false; S.catPerguntado = false; return entrarNoModelo1320(conferir, catArq); };
+const estadoProjeto1320 = estadoProjeto;
+estadoProjeto = function (comHist) { const P = estadoProjeto1320(comHist); if (P && P.estado) P.estado.calcDep = S.calcDep || null; return P; };
+const restaurarProjeto1320 = restaurarProjeto;
+restaurarProjeto = function (P, rotulo) {
+  const C = P && P.estado && P.estado.calcDep;
+  const x = restaurarProjeto1320(P, rotulo);
+  if (C && S.dados && S.dados.cols.includes(C.col)) { S.calcDep = C; if (!S.depAlt && S.dep.col !== C.col) S.depAlt = C.col; calcAtualizar(); recalcular(true); }
+  return x;
+};
+// gravação: a coluna calculada (ou a original, quando a calculada é a dependente) vai como variável fora do modelo
+const modeloParaGravar1320 = modeloParaGravar;
+modeloParaGravar = function () {
+  const M = modeloParaGravar1320(), C = S.calcDep; if (!M || !C || !S.dados.cols.includes(C.col)) return M;
+  const m = S.nomeOrig || {}, r = n => m[n] || n, tem = n => M.dep.nome === r(n) || M.vars.some(v => v.nome === r(n));
+  [C.col, C.de].forEach(n => { if (!tem(n)) M.vars = [...M.vars, { nome: r(n), tipo: "QUANTITATIVA", sinal: 0, inc: false, tr: "X" }]; });
+  return M;
+};
+// troca de dependente com a coluna calculada: categoria e base vêm da conta; aviso do modelo em log
+const avisoTrocaDep1320 = avisoTrocaDep;
+avisoTrocaDep = function (antigo) {
+  avisoTrocaDep1320(antigo);
+  const C = S.calcDep; if (!C || ![C.col, C.de].includes(S.dep.col)) return;
+  const vb = S.vars.find(v => v.col === C.base && v.inc);
+  if (S.dep.tr === "LN_Y" && vb && vb.tr === "LN_X")
+    setTimeout(() => ui.toast(`Com ln(y) e ln(${C.base}) no modelo, o modelo em ${C.op === "mult" ? "VT" : "VU"} é o mesmo: só o coeficiente de ${C.base} muda (${C.op === "mult" === (S.dep.col === C.col) ? "+1" : "−1"}) e o valor estimado é igual. O R² muda sem o modelo melhorar ou piorar.`), 3700);
+};
+
+/* ---------- (3) Categoria da dependente por nome + valores ---------- */
+// .sda: guarda o código bruto da coluna Unitário da dependente (o 2 não é conhecido: "não identificado").
+const lerSda1320 = lerSda;
+lerSda = function (abas, arquivo) {
+  const M = lerSda1320(abas, arquivo);
+  try {
+    const A = n => (abas.find(a => a.nome === n) || { linhas: [] }).linhas, [hv, ...rv] = A("Var"), ix = re => (hv || []).findIndex(x => re.test(normX(x)));
+    const iNome = ix(/^nome$/), iUn = ix(/^unitario$/);
+    const l = rv.find(x => x && String(x[iNome] || "").trim() === M.dep.nome);
+    if (l && iUn >= 0) { const un = numX(l[iUn]); M.cat = { ...(M.cat || { cat: "na", base: "" }), un }; if (un === 2) M.cat.cod2 = true; }
+  } catch (e) { }
+  return M;
+};
+// valores: mediana da dependente (VU fica em R$/m²; VT, em centenas de milhares) e, na faixa intermediária,
+// a elasticidade ln(dependente) × ln(base) (VT perto de 1; VU perto de 0 ou negativa)
+function catPorValores(dep, base) {
+  if (!S.dados) return null;
+  const ys = S.dados.linhas.map(l => l.v[dep]).filter(y => y > 0); if (ys.length < 5) return null;
+  const s = [...ys].sort((a, b) => a - b), med = s[s.length >> 1];
+  if (med >= 100000) return "total";
+  if (med <= 20000) return "unit";
+  if (!base) return null;
+  const P = S.dados.linhas.filter(l => l.v[dep] > 0 && l.v[base] > 0).map(l => [Math.log(l.v[base]), Math.log(l.v[dep])]); if (P.length < 5) return null;
+  const mx = P.reduce((a, p) => a + p[0], 0) / P.length, my = P.reduce((a, p) => a + p[1], 0) / P.length;
+  let sxy = 0, sxx = 0; P.forEach(([x, y]) => { sxy += (x - mx) * (y - my); sxx += (x - mx) ** 2; });
+  if (!(sxx > 0)) return null;
+  const b = sxy / sxx; return b >= 0.8 ? "total" : b <= 0.2 ? "unit" : null;
+}
+function catAviso(t) { if (!S.avisos) S.avisos = []; if (!S.avisos.includes(t)) S.avisos.push(t); }
+inferirCat = function () {
+  const dep = S.dep.col, C = S.calcDep;
+  if (C && dep === C.col) { S.cat = C.op === "mult" ? "total" : "unit"; S.base = C.base; S.catArq = null; return sincronizarCat(); }
+  if (C && dep === C.de) { S.cat = C.catDe; S.base = C.base; S.catArq = null; return sincronizarCat(); }
+  if (/^v[tu] calculado \(/i.test(dep)) { const a0 = S.catArq; S.catArq = null; S.cat = /^vt/i.test(dep) ? "total" : "unit"; S.base = (a0 && a0.base) || areaAuto(); return sincronizarCat(); }   // v1.32.1 (revisão): coluna calculada pelo revisor, reaberta de arquivo: a conta está no nome
+  const arq = S.catArq; S.catArq = null;
+  if (!arq && S.mult) { S.cat = "unit"; S.base = S.mult; return sincronizarCat(); }
+  if (arq && arq.un === -1 && arq.cat === "na") { S.cat = "na"; S.base = ""; return sincronizarCat(); }   // "Não se aplica" escolhido no programa
+  if (arq && arq.un === undefined && !arq.cod2 && CAT_NOME[arq.cat] && arq.cat !== "na") { S.cat = arq.cat; S.base = arq.base || areaAuto(); return sincronizarCat(); }   // laudo e planilha: categoria declarada
+  const base = (arq && arq.base) || areaAuto();
+  const nomeTxt = { unit: "valor unitário", total: "valor total" };
+  const evArq = arq && !arq.cod2 ? (arq.un === 1 ? "unit" : arq.un === 0 ? "total" : null) : null;
+  const ev = { arquivo: evArq, nome: ehUnitario(dep) ? "unit" : ehNomeTotal(dep) ? "total" : null, valores: catPorValores(dep, base) };
+  if (arq && arq.cod2) catAviso(`O arquivo traz um código de categoria não identificado (2) para ${dep}; a categoria foi deduzida pelo nome e pelos valores. Confira no cartão Modelo.`);
+  const dec = Object.entries(ev).filter(([, v]) => v), conta = { unit: 0, total: 0 }; dec.forEach(([, v]) => conta[v]++);
+  const motivos = () => dec.map(([k, v]) => `${k === "arquivo" ? "o arquivo marca" : k === "nome" ? "o nome indica" : "os valores indicam"} ${nomeTxt[v]}`);
+  let cat;
+  if (!dec.length) cat = null;
+  else if (!conta.unit || !conta.total) cat = dec[0][1];
+  else if (conta.unit !== conta.total) {
+    cat = conta.unit > conta.total ? "unit" : "total";
+    catAviso(`Categoria de ${dep}: ${motivos().join("; ")}. Adotado ${nomeTxt[cat]}; confira no cartão Modelo.`);
+  } else cat = "conflito";
+  if (cat === "unit" || cat === "total") { S.cat = cat; S.base = base; return sincronizarCat(); }
+  // sem evidência ou empate: provisório (arquivo > valores > nome; sem nada, "Não se aplica") e pergunta uma vez, se houver área
+  const prov = ev.arquivo || ev.valores || ev.nome || "na";
+  S.cat = prov; S.base = prov === "na" ? "" : base; sincronizarCat();
+  if (base && !S.catPerguntado && typeof document !== "undefined") catPerguntar({ dep, base, prov, motivos: dec.length ? motivos() : ["nem o nome nem os valores indicam se é valor unitário ou total"] });
+};
+function catPerguntar(P) {
+  S.catPerguntado = true;
+  setTimeout(async () => {
+    if (!S.dados || S.dep.col !== P.dep) return;
+    const corpo = `<p>Não deu para saber com segurança se <b>${esc(P.dep)}</b> é valor unitário ou valor total:</p><ul>${P.motivos.map(m => `<li>${esc(m)}</li>`).join("")}</ul><p class="small muted">Variável base: ${esc(P.base)}. A resposta fica salva no projeto e pode ser mudada no cartão Modelo.</p>`;
+    const v = await ui.modal("Categoria da variável dependente", corpo, [
+      { txt: "Valor unitário", cls: P.prov === "unit" ? "btn-primary" : "", valor: "unit" },
+      { txt: "Valor total", cls: P.prov === "total" ? "btn-primary" : "", valor: "total" },
+      { txt: "Não se aplica", cls: "btn-ghost", valor: "na" }]);
+    if (!v || !S.dados || S.dep.col !== P.dep) return;
+    S.cat = v; S.base = v === "na" ? "" : P.base; sincronizarCat(); recalcular(true);
+  }, 400);
+}
+
+/* v1.32.1 (revisão): a dependente é unitária? Com coluna calculada pelo revisor, pela conta (VU × área = total; VT ÷ área = unitário); senão, pelo nome, como antes. */
+function depRotuloUnit() {
+  const C = S.calcDep, c = S.dep.col;
+  if (/^vt calculado \(/i.test(c)) return false; if (/^vu calculado \(/i.test(c)) return true;   // reaberta de um .sda/.tsr, sem S.calcDep
+  if (C && c === C.col) return C.op !== "mult";
+  if (C && c === C.de) return C.catDe === "unit";
+  return ehUnitario(c);
+}
+
+/* ---------- Ajuda ---------- */
+const abrirAjuda1320 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1320();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.32.0:</b> a <b>equação</b> do modelo aparece no topo (clique para copiar a completa). No cartão Modelo, a dependente ganhou <b>Criar VT</b> (VU × área) ou <b>Criar VU</b> (VT ÷ área): a coluna, marcada como calculada pelo revisor, vale para todos os dados, recalcula ao editar e vai para o .sda/.tsr gravado; no VT, o valor redondo que o arredondamento do VU escondeu é reconstituído (ex.: 599.999,30 → 600.000), só quando a conta volta exatamente ao VU do arquivo. A <b>categoria</b> da dependente (unitário ou total) é deduzida pelo nome e pelos valores, com o campo do arquivo como mais uma evidência; só pergunta quando não concordam. No <b>Avaliando</b>, Enter e Tab passam ao campo seguinte sem fechar a lista nem perder o foco.</p>`);
+};
+
+/* =====================================================================
+   v1.32.1 — Consolidação da área da Busca (Lote 4: E1 + E2), C4, C8, C11, A4, A5 e revisão da v1.32.0.
+   Sem funcionalidade nova. As funções da Busca passaram a ter uma declaração só (abrirBusca, executarBusca, abaBusca,
+   abaBuscaU, listaU, funilU, linhasBT, aplicarBT, aplicarDaBusca, ajustarBusca, inserirFaixa); os Workers são gerados
+   do texto do núcleo (fonteNucleoBusca, fonteNucleoDetalhar); o detalhamento e os testes rodam em paralelo.
+   ===================================================================== */
+const abrirAjuda1321 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1321();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>v1.32.1:</b> na Busca de Modelos, o detalhamento e os testes das equações guardadas passam a rodar em paralelo, nos mesmos núcleos da busca (mais rápido; os resultados são os mesmos). Limpeza interna da Busca, sem mudança para quem usa.</p>`);
+};
+
+/* =====================================================================
+   v1.32.2 — C16 (contagem no passo a passo) e IC de y² que cruza o zero (decisões de 15/10/2026).
+   ===================================================================== */
+const abrirAjuda1322 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1322();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>v1.32.2:</b> no passo a passo da Busca, "atendem à NBR" conta as equações distintas aprovadas, igual com qualquer número de núcleos. Com y², um limite do IC ou um ponto da projeção com valor negativo em y² não tem valor em R$ (estimativa impossível): a curva dos pontos máximos e mínimos conta esses pontos como instáveis.</p>`);
+};
+
+
+/* =====================================================================
+   v1.33.0 — Revisão automática sobre o modelo atual e "Montar no modelo atual"
+   Decisões de 15/10/2026:
+   - a Revisão automática parte do MODELO ATUAL (dados e valores editados, dados e variáveis incluídos, habilitação,
+     variáveis, transformações, dependente e avaliando atuais), com seletor "Modelo atual | Arquivo como chegou"
+     (padrão: modelo atual). Sem alterações, o modelo atual é o próprio arquivo e a revisão é a mesma de antes;
+   - a reprodução e o valor do laudo seguem do arquivo; as alterações vão listadas no relatório (seção 0);
+   - em cada opção, "Montar no modelo atual" (um clique, em destaque quando o alternativo vence): variáveis,
+     transformações, dependente (cria o VT, com a regra do arredondamento, ou a razão A ÷ B quando preciso),
+     exclusões e critério; confere o VU com o relatório e abre Resultados › Comparação. Ctrl+Z desfaz.
+   Só acrescenta código: invólucros que chamam a versão anterior.
+   ===================================================================== */
+const RA_TX = { x: "X", ln: "LN_X", "1/x": "INV_X", rx: "RAIZ_X", x2: "X2", "1/x2": "INV_X2", "1/rx": "INV_RAIZ_X" };
+const RA_TY = { x: "Y", ln: "LN_Y", "1/x": "INV_Y", rx: "RAIZ_Y", x2: "Y2", "1/x2": "INV_Y2", "1/rx": "INV_RAIZ_Y" };
+const raFonte = () => (S.raFonte === "arquivo" && S.lido ? "arquivo" : "atual");
+
+/* ---------- o que mudou em relação ao arquivo ---------- */
+function raAlteracoes() {
+  if (!S.dados || !S.lido || !S.lido.dep) return [];
+  const L = S.lido, out = [], br = v => fmtV(v);
+  if (S.dep.col !== L.dep.col) out.push(`variável dependente: ${S.dep.col} (no arquivo, ${L.dep.col})`);
+  else if (S.dep.tr !== L.dep.tr) out.push(`transformação da dependente: ${TY[S.dep.tr].r} (no arquivo, ${TY[L.dep.tr].r})`);
+  const vl = new Map(L.vars.map(v => [v.col, v]));
+  const ent = [], sai = [], trs = [];
+  S.vars.forEach(v => {
+    const o = vl.get(v.col);
+    if (!o) { if (v.inc) ent.push(`${v.col} (${TX[v.tr].r}, variável nova)`); return; }
+    if (v.inc && !o.inc) ent.push(`${v.col} (${TX[v.tr].r})`);
+    else if (!v.inc && o.inc) sai.push(v.col);
+    else if (v.inc && o.inc && v.tr !== o.tr) trs.push(`${v.col}: ${TX[v.tr].r} (no arquivo, ${TX[o.tr].r})`);
+  });
+  if (ent.length) out.push(`variáveis incluídas no modelo: ${ent.join("; ")}`);
+  if (sai.length) out.push(`variáveis retiradas do modelo: ${sai.join(", ")}`);
+  if (trs.length) out.push(`transformações trocadas: ${trs.join("; ")}`);
+  const novasCols = S.dados.cols.filter(c => !L.vars.some(v => v.col === c) && c !== L.dep.col && !S.dados.linhas.every(l => l.v0 && c in l.v0));
+  if (novasCols.length) out.push(`colunas criadas pelo revisor: ${novasCols.join(", ")}`);
+  const orig = S.dados.linhas.filter(l => !l.novo), at = L.ativos || [];
+  const des = [], hab = [], edit = [];
+  orig.forEach((l, i) => {
+    const a0 = i < at.length ? !!at[i] : false;
+    if (a0 && !l.ativo) des.push(l.id); else if (!a0 && l.ativo) hab.push(l.id);
+    if (l.v0) { const ks = Object.keys(l.v0).filter(k => Number.isFinite(l.v0[k]) || Number.isFinite(l.v[k])).filter(k => !(l.v0[k] === l.v[k] || (Number.isNaN(l.v0[k]) && Number.isNaN(l.v[k])))); if (ks.length) edit.push(`${l.id} (${ks.map(k => `${k} ${br(l.v0[k])} → ${br(l.v[k])}`).join("; ")})`); }
+  });
+  const novos = S.dados.linhas.filter(l => l.novo).map(l => l.id);
+  if (des.length) out.push(`dados desabilitados pelo revisor: ${des.join(", ")}`);
+  if (hab.length) out.push(`dados reabilitados pelo revisor: ${hab.join(", ")}`);
+  if (novos.length) out.push(`dados incluídos pelo revisor: ${novos.join(", ")}`);
+  if (edit.length) out.push(`valores editados: ${edit.join("; ")}`);
+  const av0 = L.aval || {}, avM = [];
+  Object.keys(S.dados.aval).forEach(k => { const a = av0[k], b = S.dados.aval[k]; if (!Number.isFinite(b)) return; if (!Number.isFinite(a) || a !== b) avM.push(`${k} ${Number.isFinite(a) ? br(a) : "vazio"} → ${br(b)}`); });
+  if (avM.length) out.push(`avaliando: ${avM.join("; ")}`);
+  return out;
+}
+
+/* ---------- entrada: modelo atual ou arquivo ---------- */
+const raEntrada1330 = raEntrada;
+raEntrada = function () {
+  if (!S.dados || !S.lido || !S.lido.dep) return null;
+  if (raFonte() === "arquivo" || !raAlteracoes().length) return raEntrada1330();
+  const dep = S.dep.col, est = S.est && !S.est.erro ? S.est : null, X = S.externo;
+  const cols = S.vars.filter(v => v.col !== dep).map(v => ({ nome: v.col, tipo: v.tipo, inc: !!v.inc, tr: v.tr, sinal: v.sinal || 0 }));
+  if (S.depAlt && S.depAlt !== dep && !cols.some(c => c.nome === S.depAlt) && S.dados.cols.includes(S.depAlt)) cols.push({ nome: S.depAlt, tipo: "QUANTITATIVA", inc: false, tr: "X", sinal: 0 });
+  return { arquivo: ((X && X.arquivo) || S.origem || "modelo") + " (modelo atual)", programa: (X && X.programa) || "", cols, dep: { nome: dep, tr: S.dep.tr },
+    linhas: S.dados.linhas.map(l => ({ id: l.id, ativo: !!l.ativo, v: l.v })), aval: { ...S.dados.aval },
+    ref: { R2: S.r && !S.r.erro ? S.r.R2 : undefined, central: est ? est.central : undefined, crit: S.crit, critAdot: S.dep.tr === "LN_Y" ? S.crit : null, vrAdot: undefined },
+    descs: (X && X.descs) || {}, atual: true };
+};
+function raAssin(Mx) {
+  if (!Mx) return "";
+  const s = JSON.stringify([raFonte(), Mx.dep, Mx.cols, Mx.linhas.map(l => [l.ativo, l.v]), Mx.aval]);
+  let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return s.length + ":" + h;
+}
+// critério do modelo atual: é o do topo, não "lido do arquivo"
+const raContexto1330 = RA.contexto;
+RA.contexto = function (F, resp) { const ctx = raContexto1330(F, resp); if (S.ra && S.ra.emAtual && F.ytr === "ln" && !resp.crit) ctx.origem_crit = "critério do topo no modelo atual"; return ctx; };
+const raRodar1330 = raRodar;
+raRodar = async function () {
+  if (S.ra.rodando) return;
+  const Mx = raEntrada(); if (!Mx) return raRodar1330();
+  const lref = (Mx.atual ? S.dados.linhas : S.dados.linhas.filter(l => !l.novo)).map(l => l._k), assin = raAssin(Mx), alt = Mx.atual ? raAlteracoes() : [];
+  S.ra.emAtual = !!Mx.atual;
+  try { await raRodar1330(); } finally { S.ra.emAtual = false; }
+  if (S.ra.E) { S.ra.E.lref = lref; S.ra.E.partida = alt; S.ra.E.atual = !!Mx.atual; S.ra.assin = assin; S.ra.montada = null; }
+  if (utilDe(S.aba) === "revauto") { const y = window.scrollY; desenhar(false); window.scrollTo(0, y); }
+};
+// relatório: seção 0 com o ponto de partida quando o modelo atual difere do arquivo
+const raRelatorio1330 = raRelatorio;
+raRelatorio = function (E, meta) {
+  const txt = raRelatorio1330(E, meta);
+  if (!S.ra || !S.ra.emAtual) return txt;
+  const alt = raAlteracoes(), R0 = S.refArquivo, L = txt.split("\n"), i = L.findIndex(l => l.startsWith("## 1."));
+  if (i < 0 || !alt.length) return txt;
+  const vArq = R0 && Number.isFinite(R0.central) ? `; valor gravado no arquivo R$ ${RA.br(R0.central)}${R0.crit ? ` (${CRIT_NOME[R0.crit] || R0.crit})` : ""}` : "";
+  const sec = ["## 0. PONTO DE PARTIDA",
+    `Modelo de partida: o MODELO ATUAL do revisor, diferente do arquivo recebido${vArq}. Neste relatório, "modelo do laudo" e "exclusões do autor" referem-se ao modelo atual e aos dados desabilitados nele; a reprodução da seção 1 confere o modelo atual refeito pelo motor com o calculado no Módulo.`,
+    "Alterações em relação ao arquivo:", ...alt.map(a => `- ${a}`), ""];
+  L.splice(i, 0, ...sec);
+  return L.join("\n").replace("Reprodução do modelo a partir do arquivo:", "Reprodução do modelo atual (motor × Módulo):");
+};
+
+/* ---------- tela: seletor, aviso de desatualizada, opções com "Montar no modelo atual" ---------- */
+const raResumo1330 = raResumo;
+raResumo = function (E) {
+  let h = raResumo1330(E);
+  if (E.atual) h = h.replace(">Valor do laudo<", ">Valor do modelo atual<").replace(">Reprodução<", ">Reprodução (modelo atual)<");
+  return h;
+};
+function raFmtEq(c) {
+  const F = RA.FMT_X, nx = (v, t) => F[t].replace("{}", v.includes("÷") && t !== "x" ? `(${v})` : v);
+  return `${F[c.ytr].replace("{}", c.y)} ~ ${c.spec.map(([v, t]) => nx(v, t)).join(" + ")}`;
+}
+function raCartaoOpcoes(E) {
+  const ops = E.opcoes || [], br = RA.br, pct = RA.pct, va = E.ctx.vu_adotado || E.orig.vu;
+  const cp = ops[0] && ops[0].comparacao, vence = !!(cp && (cp.classe === "domina" || cp.melhor_pela_ordem));
+  const M = S.ra.montada;
+  const rot = E.atual ? "modelo atual" : "laudo";
+  if (!ops.length) return `<div class="card card-in"><h3>Opções</h3><p class="small muted" style="margin:0">Nenhum modelo alternativo válido: o ${rot} se sustenta.</p></div>`;
+  return `<div class="card card-in ra-opc"><h3>Opções encontradas<span class="sp"></span><span class="small muted">${vence ? `a opção 1 vence o ${rot}` : `o ${rot} se sustenta`}</span></h3>
+    <p class="small muted" style="margin:0 0 8px">"Montar no modelo atual" troca variáveis, transformações, dependente, dados habilitados e critério pelos da opção (cria o VT ou a razão A ÷ B quando preciso), confere o valor com o relatório e abre Resultados › Comparação, com o arquivo recebido como referência. Ctrl+Z desfaz.</p>
+    ${M ? `<div class="banner ${M.ok ? "ok" : "w"}"><span class="bi">${M.ok ? "✓" : "!"}</span><div><b>Opção ${M.i + 1} montada no modelo atual</b><span class="small">${esc(M.txt)}</span></div><span></span></div>` : ""}
+    <div class="ra-opc-l">${ops.map((c, i) => `<div class="ra-opc-i ${i === 0 && vence ? "dest" : ""}">
+      <div class="ra-opc-t"><span class="ra-opc-h"><b>Opção ${i + 1}</b>${i === 0 ? ` <span class="chip ${vence ? "w" : "ok"}">${esc(cp.classe === "troca" ? "troca" : cp.classe)}</span>` : ""}</span>
+        <span class="mono small ra-opc-eq" title="${esc(raFmtEq(c))}">${esc(raFmtEq(c))}</span>
+        <span class="small muted">VU R$ ${br(c.vu)} (${pct(c.vu / va - 1)} sobre o ${rot}) · R² aj ${br(c.R2a, 4)} · ${c.n} dados${c.excl.length ? ` · ${c.excl.length} excluído(s)` : ""} · grau ${RA.ROMANO[c.gf]}</span></div>
+      <button class="btn btn-sm ${i === 0 && vence ? "btn-primary" : ""}" data-ra-montar="${i}">Montar no modelo atual</button></div>`).join("")}</div></div>`;
+}
+const abaRA1330 = abaRA;
+abaRA = function () {
+  let h = abaRA1330();
+  if (!S.dados || !S.lido) return h;
+  const nAlt = raAlteracoes().length, f = raFonte();
+  const sel = `<span class="small muted ra-mod ra-fonte">Partir de: <label><input type="radio" name="ra-fonte" value="atual" ${f === "atual" ? "checked" : ""}> modelo atual${nAlt ? ` (${nAlt} alteração(ões) em relação ao arquivo)` : " (igual ao arquivo)"}</label> <label><input type="radio" name="ra-fonte" value="arquivo" ${f === "arquivo" ? "checked" : ""}> arquivo como chegou</label></span>`;
+  h = h.replace(/ Usa o modelo como chegou no arquivo: o que for alterado na Análise não entra\.<\/span>/, f === "atual" ? " Parte do modelo atual, com o que foi alterado na Análise; a reprodução e o valor do laudo seguem do arquivo.</span>" + sel : " Usa o modelo como chegou no arquivo: o que for alterado na Análise não entra.</span>" + sel);
+  h = h.replace("Refaz o modelo do arquivo,", f === "atual" ? "Refaz o modelo atual," : "Refaz o modelo do arquivo,");
+  const E = S.ra.E;
+  if (E && S.ra.txt && !S.ra.rodando) {
+    const ass = raAssin(raEntrada()), velho = S.ra.assin && ass !== S.ra.assin;
+    const aviso = velho ? `<div class="banner w"><span class="bi">!</span><div><b>O modelo mudou depois da revisão</b><span class="small">${S.ra.montada ? "Uma opção foi montada no modelo atual (ou outra coisa mudou)." : "Dados, variáveis, avaliando ou a escolha de partida mudaram."} O relatório abaixo é do modelo de antes; rode de novo para revisar o modelo como está agora.</span></div><button class="btn btn-sm" data-ra-acao="rodar">Rodar de novo</button></div>` : "";
+    const marca = '<div class="card card-in"><h3>Relatório para o agente';
+    const j = h.indexOf(marca);
+    if (j >= 0) h = h.slice(0, j) + aviso + raCartaoOpcoes(E) + h.slice(j);
+  }
+  return h;
+};
+document.addEventListener("change", e => {
+  const t = e.target; if (!t || t.name !== "ra-fonte") return;
+  S.raFonte = t.value; sessaoSuja = true; desenhar(false);
+});
+document.addEventListener("click", e => { const t = e.target.closest && e.target.closest("[data-ra-montar]"); if (t) raMontar(+t.dataset.raMontar); });
+
+/* ---------- Montar uma opção no modelo atual ---------- */
+function raGarantirVT(de, base) {
+  const C = S.calcDep;
+  if (C) { if (C.de === de && C.base === base && C.op === "mult") return C.col; ui.toast(`Já existe a coluna calculada “${C.col}”; remova-a para montar esta opção.`, "e"); return null; }
+  if (!S.dados.cols.includes(de) || !S.dados.cols.includes(base)) { ui.toast(`Faltam as colunas ${de} e ${base} para criar o VT.`, "e"); return null; }
+  let nome = `VT calculado (${de} × ${base})`, k = 2; while (S.dados.cols.includes(nome)) nome = nome.replace(/( \d+)?$/, " " + k++);
+  S.dados.cols.push(nome);
+  S.calcDep = { col: nome, de, base, op: "mult", catDe: "unit", arred: true, casas: casasDe(de), ajustados: [], n: 0 };
+  if (!S.depAlt || S.depAlt === de) S.depAlt = nome;
+  calcAtualizar();
+  return nome;
+}
+function raCriarRazao(nome) {
+  const [a, b] = nome.split(" ÷ ");
+  if (!a || !b || !S.dados.cols.includes(a) || !S.dados.cols.includes(b)) return false;
+  S.vars.push({ col: nome, inc: false, tr: "X", tipo: "QUANTITATIVA", sinal: 0, nova: true, razao: { a, b } });
+  S.dados.cols.push(nome);
+  S.dados.linhas.forEach(l => { const x = l.v[a] / l.v[b]; l.v[nome] = Number.isFinite(x) ? x : NaN; });
+  const xa = S.dados.aval[a] / S.dados.aval[b]; if (Number.isFinite(xa)) S.dados.aval[nome] = xa;
+  S.dadosVer = (S.dadosVer || 0) + 1;
+  return true;
+}
+function raMontar(i) {
+  const E = S.ra.E, c = E && E.opcoes && E.opcoes[i]; if (!c || !E.lref) return;
+  const F = E.F;
+  // 1. o que falta criar: VT calculado pelo motor e razões A ÷ B
+  let depCol = c.y;
+  const precisaVT = !S.dados.cols.includes(depCol) && depCol !== S.dep.col && F.vtCalc && depCol === F.vt;
+  if (!S.dados.cols.includes(depCol) && !precisaVT) return ui.toast(`A dependente ${depCol} da opção não existe no modelo atual.`, "e");
+  const razoes = c.spec.map(s => s[0]).filter(v => !S.dados.cols.includes(v));
+  const semJeito = razoes.filter(v => !v.includes(" ÷ "));
+  if (semJeito.length) return ui.toast(`A opção usa ${semJeito.join(", ")}, que não existe no modelo atual.`, "e");
+  const naoTx = c.spec.filter(([, t]) => !RA_TX[t]).map(([v, t]) => `${v} (${t})`); if (naoTx.length || !RA_TY[c.ytr]) return ui.toast(`Transformação sem equivalente no Módulo: ${naoTx.join(", ") || c.ytr}.`, "e");
+  const criou = [];
+  if (precisaVT || razoes.length) {
+    guardar(`criar ${[precisaVT ? "VT" : "", ...razoes].filter(Boolean).join(", ")} para a opção ${i + 1} da Revisão automática`);
+    if (precisaVT) { const col = raGarantirVT(F.vu, F.base); if (!col) { S.hist.pop(); return; } depCol = col; criou.push(col); }
+    for (const v of razoes) { if (!raCriarRazao(v)) { ui.toast(`Não foi possível criar ${v}.`, "e"); return; } criou.push(v); }
+  }
+  // 2. aplicar (um passo do Ctrl+Z; volta também a dependente, a outra dependente e o critério)
+  pushHistAtivos(`montar a opção ${i + 1} da Revisão automática`);
+  const h = S.hist[S.hist.length - 1]; h.critAntes = S.crit; h.depAltAntes = S.depAlt || ""; h.catAntes = S.cat; h.baseAntes = S.base; h.multAntes = S.mult;
+  if (depCol !== S.dep.col) {
+    const antigo = S.dep.col, iv = S.vars.findIndex(v => v.col === depCol);
+    if (iv >= 0) { h.varDep = S.vars[iv]; h.varDepIdx = iv; S.vars.splice(iv, 1); }
+    S.dep.col = depCol; S.depAlt = antigo; S.cat = undefined; S.base = ""; S.mult = "";
+  }
+  S.dep.tr = RA_TY[c.ytr];
+  const spec = new Map(c.spec.map(([v, t]) => [v, RA_TX[t]]));
+  S.vars.forEach(v => { if (spec.has(v.col)) { v.inc = true; v.tr = spec.get(v.col); } else v.inc = false; });
+  const porK = new Map(S.dados.linhas.map(l => [l._k, l])), lrefAt = E.lref.map(k => porK.get(k));
+  const ex = new Set(c.excl), dentro = new Set(lrefAt.filter(Boolean));
+  lrefAt.forEach((l, k) => { if (!l) return;
+    if (ex.has(k)) { const ms = (E.motivos && E.motivos.get(k)) || [], mt = ms.filter(x => !x.info).map(x => x.txt); l.ativo = false; l.just = `Revisão automática (opção ${i + 1}): ${mt.length ? mt.join("; ") : "mesma exclusão do modelo de partida"}`; }
+    else if (!l.ativo) { l.ativo = true; delete l.just; }
+  });
+  S.dados.linhas.forEach(l => { if (!dentro.has(l) && l.ativo) { l.ativo = false; l.just = "Fora da Revisão automática (dado incluído depois)"; } });
+  if (E.ctx.crit && CRIT_NOME[E.ctx.crit]) S.crit = E.ctx.crit;
+  recalcular(true);
+  // 3. conferência com o relatório (VU)
+  const e = S.est && !S.est.erro ? S.est : null; let vu = e ? e.central : NaN;
+  if (catAtual() === "total" && S.base && S.dados.aval[S.base] > 0) vu = vu / S.dados.aval[S.base];
+  const d = vu / c.vu - 1, ok = Number.isFinite(d) && Math.abs(d) <= 1e-4;
+  const txt = ok ? `VU R$ ${fmtNum(vu, 2)}: confere com o relatório.${criou.length ? ` Criado: ${criou.join(", ")}.` : ""}`
+    : `VU R$ ${Number.isFinite(vu) ? fmtNum(vu, 2) : "—"} no Módulo × R$ ${fmtNum(c.vu, 2)} no relatório (${Number.isFinite(d) ? fmtPct(d * 100, 2) : "sem valor"}). Confira o avaliando e os dados: a revisão foi feita com ${E.atual ? "o modelo atual de então" : "o arquivo como chegou"}.`;
+  S.ra.montada = { i, ok, txt };
+  ui.toast(`Opção ${i + 1} montada no modelo atual. ${txt} Ctrl+Z desfaz.`, ok ? "" : "e");
+  S.aba = "comp"; S.tela = "explorar"; S.alertasAbertos = false; desenhar(false); window.scrollTo(0, 0);
+}
+
+/* ---------- Comparação: estimativas na unidade do arquivo quando a dependente muda (VU ↔ VT) ---------- */
+function raDepTotal(col) {
+  const C = S.calcDep; if (C && col === C.col) return C.op === "mult"; if (C && col === C.de) return C.op !== "mult";
+  const cat = catAtual();
+  if (col === S.dep.col) return cat === "total" ? true : cat === "unit" ? false : null;
+  if (col === S.depAlt) return cat === "total" ? false : cat === "unit" ? true : null;
+  return null;
+}
+function fatorParaArquivo(col) {
+  if (!S.lido || !S.lido.dep || !col) return 1;
+  const rc = S.lido.dep.col; if (col === rc) return 1;
+  const a = raDepTotal(col), b = raDepTotal(rc); if (a === null || b === null || a === b) return 1;
+  const base = (S.calcDep && S.calcDep.base) || S.base, bv = base && S.dados.aval[base]; if (!(bv > 0)) return 1;
+  return a ? 1 / bv : bv;
+}
+const compararCom1330 = compararCom;
+compararCom = function (R) {
+  const f = R && !R.fixado && (R === S.refArquivo || R === S.ref) ? fatorParaArquivo(S.dep.col) : 1, e0 = S.est;
+  if (f === 1 || !e0 || e0.erro) return compararCom1330(R);
+  const k = x => Number.isFinite(x) ? x * f : x;
+  S.est = { ...e0, central: k(e0.central), inf: k(e0.inf), sup: k(e0.sup), vals: Object.fromEntries(Object.entries(e0.vals || {}).map(([c, v]) => [c, k(v)])) };
+  try { const out = compararCom1330(R); if (out && out.itens[0]) out.itens[0].rot += ` · em ${nomeCurto(S.lido.dep.col)}`; return out; } finally { S.est = e0; }
+};
+const tabelaComparacao1330 = tabelaComparacao;
+tabelaComparacao = function (C, paraRel) {
+  const conv = c => { if (!c || !c.R || !c.R.m || !c.R.m.dep) return c; const f = fatorParaArquivo(c.R.m.dep.col); return f === 1 ? c : { ...c, R: { ...c.R, central: c.R.central * f } }; };
+  const mudou = (C || []).some(c => conv(c) !== c), rc = S.lido && S.lido.dep && S.lido.dep.col;
+  const rot0 = `Estimativa (${esc(nomeCurto(S.dep.col))})`, rot1 = `Estimativa em ${esc(nomeCurto(rc || ""))} (VT ÷ base ou VU × base)`;
+  if (paraRel) { const L = tabelaComparacao1330(C, true); return !mudou ? L : L.map(([r, f, b]) => [r === rot0 ? rot1 : r, c => f(conv(c)), b ? [c => b[0](conv(c)), b[1]] : b]); }
+  const h = tabelaComparacao1330(mudou ? C.map(conv) : C, false);
+  return mudou ? h.replace(`<th>${rot0}</th>`, `<th>${rot1}</th>`) : h;
+};
+
+const desfazer1330 = desfazer;
+desfazer = function () {
+  const h = S.hist[S.hist.length - 1], meu = h && h.depAltAntes !== undefined;
+  if (meu && h.critAntes) S.crit = h.critAntes;
+  const x = desfazer1330();
+  if (meu) {
+    if (h.varDep && !S.vars.some(v => v.col === h.varDep.col)) S.vars.splice(Math.min(h.varDepIdx, S.vars.length), 0, h.varDep);
+    S.depAlt = h.depAltAntes; S.cat = h.catAntes; S.base = h.baseAntes; S.mult = h.multAntes || "";
+    recalcular(true);
+  }
+  return x;
+};
+const estadoProjeto1330 = estadoProjeto;
+estadoProjeto = function (comHist) { const P = estadoProjeto1330(comHist); if (P && P.estado) P.estado.raFonte = S.raFonte || "atual"; return P; };
+const restaurarProjeto1330 = restaurarProjeto;
+restaurarProjeto = function (P, rotulo) { S.raFonte = (P && P.estado && P.estado.raFonte) || "atual"; return restaurarProjeto1330(P, rotulo); };
+
+document.head.insertAdjacentHTML("beforeend", `<style>
+.ra-fonte{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center}.ra-fonte label{display:inline-flex;gap:5px;align-items:center;cursor:pointer;color:var(--ink-2)}
+.ra-opc-l{display:grid;gap:8px}
+.ra-opc-i{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card)}
+.ra-opc-i.dest{border-color:var(--gold-line);background:var(--gold-soft)}
+.ra-opc-t{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.ra-opc-eq{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.ra-opc-i .btn{flex:none}
+.ra-opc-h{display:flex;align-items:center;gap:8px}
+.rs.dest>.k{max-width:300px;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:640px){.ra-opc-i{flex-direction:column;align-items:stretch}.ra-opc-eq{white-space:normal}}
+</style>`);
+
+const abrirAjuda1330 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1330();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.33.0:</b> a <b>Revisão automática</b> parte do <b>modelo atual</b>, com o que foi alterado na Análise (dados e valores, habilitação, variáveis, transformações, dependente e avaliando); o seletor "Partir de" volta ao arquivo como chegou. As alterações vão listadas no relatório (seção 0), e um aviso pede para rodar de novo quando o modelo muda depois da revisão. Cada opção encontrada tem <b>Montar no modelo atual</b>: troca o modelo pelo da opção (criando o VT ou a razão A ÷ B quando preciso), confere o valor com o relatório e abre Resultados › Comparação, com o arquivo recebido como referência. Ctrl+Z desfaz.</p>`);
+};
+
+/* =====================================================================
+   v1.33.1 — sinais (decisões de 15/10/2026, 22h)
+   (1) Com a dependente trocada (VU ↔ VT), o sinal esperado da variável base foi declarado para a outra unidade:
+       Análise, Resultado, alertas, Contraprova e Busca medem o efeito da base nessa unidade (VU = VT ÷ base),
+       como a Revisão automática. Antes acusavam "sinal incoerente" falso (área +10% → VT +6,7%, VU −3,0%).
+   (2) Revisão automática: alternativo com sinal incoerente não é opção, qualquer que seja o impacto
+       (REGRAS.alt_sinal_estrito; a linha está no motor). O modelo de partida segue como antes.
+   ===================================================================== */
+// efeito: mesma conta de antes; só a variável base, com a dependente trocada, é medida na unidade declarada.
+// (Nos Workers da Busca a função vai por texto e efeitoNaUnidadeDeclarada não existe: fica a conta de antes.)
+efeito = function (r, m, j) {
+  const s = Math.sign(r.b[j + 1]) * TX[m.vars[j].tr].cresc * TY[m.dep.tr].cresc;
+  if (typeof efeitoNaUnidadeDeclarada !== "function") return s;
+  const d = efeitoNaUnidadeDeclarada(r, m, j);
+  return d === null ? s : d;
+};
+function efeitoNaUnidadeDeclarada(r, m, j) {
+  if (!S || !S.lido || !S.lido.dep || !S.dados || !m || !m.dep || !m.vars[j] || !r || r.erro) return null;
+  const col = m.vars[j].col, base = (S.calcDep && S.calcDep.base) || S.base;
+  if (!base || col !== base) return null;
+  const dec = raDepTotal(S.lido.dep.col), cur = raDepTotal(m.dep.col);
+  if (dec === null || cur === null || dec === cur) return null;
+  const a = S.dados.aval, x = a[col]; if (!(x > 0)) return null;
+  const x1 = x * 1.1, e0 = estimar(r, m, a), e1 = estimar(r, m, { ...a, [col]: x1 });
+  if (!e0 || e0.erro || !e1 || e1.erro) return null;
+  const y0 = cur ? e0.central / x : e0.central * x, y1 = cur ? e1.central / x1 : e1.central * x1, d = y1 / y0 - 1;
+  if (!Number.isFinite(d)) return null;
+  return Math.abs(d) < 1e-9 ? 0 : Math.sign(d);
+}
+
+const abrirAjuda1331 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1331();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.33.1:</b> com a dependente trocada entre valor unitário e valor total, o sinal da variável base é conferido na unidade em que foi declarado (área maior, VU menor), sem o falso "sinal incoerente". Na Revisão automática, alternativo com qualquer sinal incoerente deixa de ser opção, também com impacto pequeno (a NBR não permite aproveitá-lo); no modelo de partida, nada muda.</p>`);
+};
+
+/* =====================================================================
+   v1.33.2 — Revisão automática (decisões de 15/10/2026, 22h20)
+   (1) Base identificada certo com a dependente em VT: VT = VU × área é simétrico e a busca pela relação podia
+       tomar a área pelo VU (e o VU pela área), tirando a área das candidatas. Agora, se a coluna achada como VU
+       tem nome de área e a "base" não tem, os papéis são trocados. Vale para o modelo atual em VT e para laudo em VT.
+   (2) A variável base é obrigatória em todo alternativo (REGRAS.alt_base_obrig; linha no avaliarModelo), como na
+       Contraprova (decisão de 12/10). O modelo de partida sem a base vira achado.
+   (3) Pergunta do sinal esperado reescrita: a pergunta primeiro, com o nome da variável na frase.
+   ===================================================================== */
+const raLerFicha1332 = RA.lerFicha;
+RA.lerFicha = function (Mx, bi) {
+  const F = raLerFicha1332(Mx, bi);
+  if (F.vt && F.vu && F.base && F.vu !== F.dep && RA.ehArea(F.vu, "quant") && !RA.ehArea(F.base, "quant")) {
+    const area = F.vu, vu = F.base;
+    F.vu = vu; F.base = area; F.tipos[area] = "quant"; F.tipos[vu] = "dep";
+    F.origemBase = "deduzida dos dados (VU = VT ÷ base)";
+  }
+  return F;
+};
+// área obrigatória também quando o motor não deduz a base: a base do Módulo (categoria unitário/total) ou a única área
+const raContexto1332 = RA.contexto;
+RA.contexto = function (F, resp) {
+  const ctx = raContexto1332(F, resp);
+  if (!ctx.base) {
+    const areas = F.nomes.filter(n => F.tipos[n] !== "dep" && RA.ehArea(n, F.tipos[n]));
+    const b = S && S.base && (S.cat === "unit" || S.cat === "total") && F.nomes.includes(S.base) && F.tipos[S.base] !== "dep" ? S.base : areas.length === 1 ? areas[0] : null;
+    if (b) ctx.areaObrig = b;
+  }
+  return ctx;
+};
+// achado: modelo de partida sem a variável base
+const raRelatorio1332 = raRelatorio;
+raRelatorio = function (E, meta) {
+  const txt = raRelatorio1332(E, meta), base = E && E.ctx && (E.ctx.base || E.ctx.areaObrig);
+  if (!base || !E.F || E.F.modelo.some(s => s[0] === base)) return txt;
+  const L = txt.split("\n"), i = L.findIndex(l => l.startsWith("## 4."));
+  if (i < 0) return txt;
+  const linha = `ACH-0 — O modelo não tem a variável base (${base}). A área que converte o valor unitário em total é obrigatória nos alternativos; sem ela, o valor não responde ao tamanho do imóvel.`;
+  if (L[i + 1] === "nenhum") L[i + 1] = linha; else L.splice(i + 1, 0, linha);
+  return L.join("\n");
+};
+// pergunta 3, reescrita: o nome da variável na própria pergunta
+raPerguntaSinais = async function (pend) {
+  const pct = (v, d = 1) => RA.pct(Math.abs(v), d, false);
+  const corpo = `<p style="margin-top:0">Para conferir se o sinal da equação está correto, a revisão precisa saber o que se espera, no mercado, de ${pend.length > 1 ? "cada variável abaixo" : `<b>${esc(pend[0].variavel)}</b>`}. O arquivo não informa, e a variável pesa no valor.</p>
+    ${pend.map((x, i) => {
+      const v = esc(x.variavel);
+      const perg = x.tipo === "dic" ? `Ter <b>${v}</b> (1 em vez de 0) deveria…` : x.tipo === "cod" ? `Subir um nível de <b>${v}</b> deveria…` : `Quando <b>${v}</b> aumenta, o valor unitário deveria…`;
+      const acao = x.tipo === "dic" ? `ter ${v}` : x.tipo === "cod" ? `subir um nível de ${v}` : `10% a mais de ${v}`;
+      const ef = Number.isFinite(x.efeito) ? `${x.efeito >= 0 ? "aumenta" : "diminui"} o valor unitário em ${pct(x.efeito)}` : "não tem efeito calculável";
+      return `<fieldset class="ra-q"><legend>${v}</legend><p style="margin:0 0 4px"><b>${perg}</b></p>
+        <p class="small muted">No modelo, ${acao} ${ef}; sem ${v}, o valor unitário muda ${pct(x.impacto)}.</p>
+        <div class="ra-op"><label><input type="radio" name="ra-s${i}" value="1"> aumentar o valor unitário</label><label><input type="radio" name="ra-s${i}" value="-1"> diminuir o valor unitário</label><label><input type="radio" name="ra-s${i}" value="0"> não há expectativa</label></div></fieldset>`;
+    }).join("")}
+    <p class="small muted" style="margin:0">Se a resposta for contrária ao modelo, o relatório aponta "sinal incoerente" (impedimento).</p>`;
+  return ui.modal(pend.length > 1 ? "Revisão automática: efeito esperado das variáveis" : `Revisão automática: efeito esperado de ${pend[0].variavel}`, corpo, [
+    { txt: "Cancelar", valor: null },
+    { txt: "Seguir", cls: "btn-primary", antes: bg => { const ok = pend.every((_, i) => $(`input[name="ra-s${i}"]:checked`, bg)); if (!ok) ui.toast("Escolha o efeito esperado de cada variável.", "e"); return ok; },
+      valor: bg => Object.fromEntries(pend.map((x, i) => [x.variavel, +$(`input[name="ra-s${i}"]:checked`, bg).value])) }
+  ], true);
+};
+// uma revisão por vez: um segundo pedido enquanto as perguntas estão abertas abria outra janela por cima
+const raRodar1332 = raRodar;
+raRodar = async function () {
+  if (S.ra.rodando || S.ra.emCurso) return;
+  S.ra.emCurso = true;
+  try { await raRodar1332(); } finally { S.ra.emCurso = false; }
+};
+const abrirAjuda1332 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1332();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.33.2:</b> na Revisão automática, a variável base (a área) é obrigatória em todo modelo alternativo, como na Contraprova; com a dependente em valor total, a área deixou de ser confundida com o valor unitário; e a pergunta do efeito esperado diz de qual variável se trata.</p>`);
+};
+
+/* =====================================================================
+   v1.34.0 — Revisão automática: aviso de variáveis sem valor no avaliando (decisão de 15/10/2026, 22h35)
+   Antes de rodar (também na primeira vez, automática), no modo "modelo atual": variáveis fora do modelo que
+   poderiam entrar na busca mas estão sem valor no avaliando (vazio, ou 0 quando nenhum dado tem 0) aparecem numa
+   janela para preencher ali mesmo. "Rodar sem elas" não pergunta de novo enquanto o conjunto não mudar.
+   Na tela, uma linha lembra quais ficam fora, com "Preencher". No modo "arquivo como chegou", sem aviso.
+   ===================================================================== */
+const RA_COORD = ["latitude", "longitude", "lat", "long", "lon", "lng", "coordenada", "coordenadas", "utm"];
+function raVarsSemAval() {
+  if (!S.dados || !S.lido || raFonte() !== "atual") return [];
+  const exc = new Set([S.dep.col, S.depAlt, S.calcDep && S.calcDep.col, S.calcDep && S.calcDep.de].filter(Boolean)), out = [];
+  S.vars.forEach(v => {
+    if (v.inc || exc.has(v.col) || v.tipo === "TEXTO") return;
+    if (RA.tokens(v.col).some(t => RA_COORD.includes(t))) return;
+    if (/(^|[^a-z])(valor|vlr|preco|vu|vt)([^a-z]|$)/.test(normX(v.col)) || ehUnitario(v.col) || ehNomeTotal(v.col)) return;   // colunas de valor (VU, VT, ponderados): não são característica do imóvel
+    const xs = S.dados.linhas.map(l => l.v[v.col]);
+    if (!xs.length || xs.some(x => !Number.isFinite(x))) return;            // dados em branco: fora de qualquer jeito
+    const mn = Math.min(...xs), mx = Math.max(...xs); if (!(mx > mn)) return;  // constante
+    const a = S.dados.aval[v.col];
+    if (Number.isFinite(a) && !(a === 0 && xs.every(x => x !== 0))) return;  // tem valor
+    out.push({ col: v.col, min: mn, max: mx, zero: a === 0 });
+  });
+  return out;
+}
+const raChaveSemAval = L => L.map(x => x.col).join("|");
+async function raPedirAval(L, paraRodar) {
+  const corpo = `<p style="margin-top:0">Estas variáveis ficam <b>fora da busca</b> de modelos alternativos porque o avaliando não tem valor${L.some(x => x.zero) ? " (o 0 conta como campo em branco quando nenhum dado da amostra tem 0)" : ""}. Preencha as que você souber para que possam ser testadas.</p>
+    <div class="ra-sa">${L.map((x, i) => `<label class="ra-sa-l"><span><b>${esc(x.col)}</b><span class="small muted">amostra: ${fmtV(x.min)} a ${fmtV(x.max)}</span></span><input class="inp num" id="ra-sa-${i}" inputmode="decimal" placeholder="valor do avaliando"></label>`).join("")}</div>
+    <p class="small muted" style="margin:8px 0 0">Os valores vão para o avaliando do modelo atual (como na Análise) e aparecem no relatório entre as alterações. Os campos deixados em branco seguem fora da busca.</p>`;
+  const ler = bg => { const o = {}; L.forEach((x, i) => { const t = $(`#ra-sa-${i}`, bg).value.trim(); if (t) { const n = numeroBR(t); if (Number.isFinite(n)) o[x.col] = n; } }); return o; };
+  const bts = paraRodar
+    ? [{ txt: "Rodar sem elas", cls: "btn-ghost", valor: { acao: "sem" } }, { txt: "Preencher e rodar", cls: "btn-primary", valor: bg => ({ acao: "rodar", vals: ler(bg) }) }]
+    : [{ txt: "Cancelar", cls: "btn-ghost", valor: null }, { txt: "Preencher", cls: "btn-primary", valor: bg => ({ acao: "preencher", vals: ler(bg) }) }];
+  return ui.modal("Variáveis sem valor no avaliando", corpo, bts, true);
+}
+function raAplicarAval(vals) {
+  const ks = Object.keys(vals || {}); if (!ks.length) return 0;
+  guardar(`avaliando de ${ks.join(", ")} (Revisão automática)`);
+  ks.forEach(k => { S.dados.aval[k] = vals[k]; });
+  sessaoSuja = true; recalcular(true);
+  return ks.length;
+}
+const raRodar1340 = raRodar;
+raRodar = async function () {
+  if (S.ra.rodando || S.ra.emCurso || S.ra.avisando) return;
+  const L = raVarsSemAval();
+  if (L.length && S.raSemAvalOk !== raChaveSemAval(L)) {
+    S.ra.avisando = true;
+    let r; try { r = await raPedirAval(L, true); } finally { S.ra.avisando = false; }
+    if (!r) return;                                           // fechou a janela: não roda
+    if (r.acao === "sem") S.raSemAvalOk = raChaveSemAval(L);
+    else { const n = raAplicarAval(r.vals); const rest = raVarsSemAval(); if (rest.length) S.raSemAvalOk = raChaveSemAval(rest); if (n) ui.toast(`Avaliando preenchido em ${n} variável(is).`); }
+  }
+  return raRodar1340();
+};
+const abaRA1340 = abaRA;
+abaRA = function () {
+  let h = abaRA1340();
+  const L = raVarsSemAval(); if (!L.length) return h;
+  const linha = `<span class="small ra-mod ra-sa-aviso">${L.length === 1 ? "1 variável sem valor no avaliando fica" : `${L.length} variáveis sem valor no avaliando ficam`} fora da busca: ${L.map(x => esc(x.col)).join(", ")}. <button class="btn-link" data-ra-semaval>Preencher</button></span>`;
+  const i = h.indexOf('<span class="small muted ra-mod ra-fonte">');
+  if (i < 0) return h;
+  const j = h.indexOf("</span>", h.indexOf("arquivo como chegou", i)) + 7;
+  return h.slice(0, j) + linha + h.slice(j);
+};
+document.addEventListener("click", async e => {
+  const t = e.target.closest && e.target.closest("[data-ra-semaval]"); if (!t) return;
+  const L = raVarsSemAval(); if (!L.length) return;
+  const r = await raPedirAval(L, false); if (!r) return;
+  const n = raAplicarAval(r.vals); if (n) ui.toast(`Avaliando preenchido em ${n} variável(is). Rode a revisão de novo para incluí-las.`);
+  desenhar(false);
+});
+document.head.insertAdjacentHTML("beforeend", `<style>
+.ra-sa{display:grid;gap:8px}
+.ra-sa-l{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.ra-sa-l>span{display:flex;flex-direction:column;gap:1px;min-width:0}
+.ra-sa-l .inp{width:170px;flex:none}
+.ra-sa-aviso{color:var(--warn)!important}
+@media (max-width:520px){.ra-sa-l{flex-direction:column;align-items:stretch}.ra-sa-l .inp{width:100%}}
+</style>`);
+const abrirAjuda1340 = abrirAjuda;
+abrirAjuda = function () {
+  abrirAjuda1340();
+  const a = ui.modalEl && $(".ajuda", ui.modalEl), ult = a && a.querySelector("p.small.muted:last-child"); if (!ult) return;
+  ult.insertAdjacentHTML("beforebegin", `<p><b>Novidades da v1.34.0:</b> antes de rodar a Revisão automática (modelo atual), as variáveis fora do modelo sem valor no avaliando aparecem numa janela para preencher ali mesmo, para que possam entrar na busca de alternativos; "Rodar sem elas" não pergunta de novo enquanto nada mudar. Na tela da revisão, uma linha lembra quais ficam fora, com "Preencher".</p>`);
+};
+
+
+/* =====================================================================
+   v1.34.1 — Outra dependente reconhecida ao abrir .sda/.tsr; seletor "Partir de" visível (decisões de 15/10/2026, 22h55)
+   1. Modelo gravado com a dependente em VT (criada ou montada pela Revisão automática) leva a coluna do VU ao arquivo
+      como variável fora do modelo. Ao reabrir, ela entrava como variável independente comum (cartão do avaliando,
+      Busca, Contraprova), com o avaliando 0. Agora, ao entrar no modelo sem "outra dependente", uma variável fora do
+      modelo que fecha a conta com a dependente e uma área em todos os dados (dependente = x × área ou x = dependente ×
+      área, até 0,5%) passa a ser a outra dependente, como na importação de planilha (v1.16).
+   2. "Partir de: modelo atual | arquivo como chegou" em faixa com borda e botões; a opção escolhida fica preenchida.
+   ===================================================================== */
+function depAltDeduzida() {
+  if (!S.dados || !S.dep || !S.dep.col || !Array.isArray(S.vars)) return null;
+  const dep = S.dep.col, L = S.dados.linhas, pos = z => Number.isFinite(z) && z > 0;
+  const areas = S.vars.filter(v => v.col !== dep && ehArea(v.col)).map(v => v.col);
+  for (const v of S.vars) {
+    if (v.inc || v.col === dep || ehArea(v.col) || (v.tipo && v.tipo !== "QUANTITATIVA")) continue;
+    const comValor = L.filter(l => pos(l.v[dep]) && pos(l.v[v.col]));
+    if (comValor.length < 3) continue;
+    for (const a of areas) {
+      if (a === v.col) continue;
+      const ok = comValor.filter(l => pos(l.v[a]));
+      if (ok.length < comValor.length) continue;
+      const fecha = f => ok.every(l => Math.abs(f(l) - 1) <= 0.005);
+      if (fecha(l => l.v[v.col] * l.v[a] / l.v[dep])) return { col: v.col, area: a, rel: "unit" };    // dependente em VT, x é o VU
+      if (fecha(l => l.v[dep] * l.v[a] / l.v[v.col])) return { col: v.col, area: a, rel: "total" };   // dependente em VU, x é o VT
+    }
+  }
+  return null;
+}
+const entrarNoModelo1341 = entrarNoModelo;
+entrarNoModelo = function (conferir, catArq) {
+  let D = null;
+  if (!S.depAltNovo) { D = depAltDeduzida(); if (D) S.depAltNovo = D.col; }   // o tratador da v1.16 tira a coluna das variáveis
+  const x = entrarNoModelo1341.apply(this, arguments);
+  if (D && S.depAlt === D.col) {
+    const conta = D.rel === "unit" ? `${S.dep.col} = ${D.col} × ${D.area}` : `${D.col} = ${S.dep.col} × ${D.area}`;
+    if (!S.avisos) S.avisos = [];
+    S.avisos.push(`“${D.col}” reconhecida como a outra dependente (${conta} em todos os dados), e não como variável do modelo. Para usá-la, troque a dependente no cartão Modelo.`);
+    if (typeof desenhar === "function") try { desenhar(); } catch (e) { /* a tela é redesenhada no próximo passo */ }
+  }
+  return x;
+};
+
+/* 2. seletor "Partir de" */
+const abaRA1341 = abaRA;
+abaRA = function () {
+  let h = abaRA1341();
+  const i = h.indexOf('<span class="small muted ra-mod ra-fonte">'); if (i < 0) return h;
+  const j = h.indexOf("</span>", h.indexOf("arquivo como chegou", i)) + 7;
+  const sel = h.slice(i, j)
+    .replace('<span class="small muted ra-mod ra-fonte">', '<span class="ra-mod ra-fonte ra-fonte2" role="radiogroup" aria-label="Partir de">')
+    .replace("Partir de:", "<b>Partir de:</b>")
+    .replace(/ \((\d+ altera[^<]*?arquivo|igual ao arquivo)\)/, ' <span class="ra-f-sub">($1)</span>');
+  return h.slice(0, i) + sel + h.slice(j);
+};
+(function () {
+  const st = document.createElement("style");
+  st.textContent = `
+.ra-fonte.ra-fonte2{color:var(--ink);font-size:13.5px;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;margin:6px 0}
+.ra-fonte2>b{font-weight:600;margin-right:2px}
+.ra-fonte2 label{border:1px solid var(--line);border-radius:999px;padding:5px 12px;background:#fff;color:var(--ink);font-weight:500}
+.ra-fonte2 label:hover{border-color:var(--petrol)}
+.ra-fonte2 label:has(input:checked){background:var(--petrol);border-color:var(--petrol);color:#fff;font-weight:600}
+.ra-fonte2 label:has(input:checked) .ra-f-sub{color:#dce7f7}
+.ra-fonte2 label:has(input:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
+.ra-fonte2 input{accent-color:#fff;margin:0}
+.ra-f-sub{font-weight:400;color:var(--ink-3);font-size:12px}`;
+  document.head.appendChild(st);
+})();
+
+/* 1b. A outra dependente vai ao motor da Revisão automática também no modo "arquivo como chegou" (o modo "modelo atual" já
+   a leva desde a v1.33.0): é por ela que o motor deduz a base (VU = VT ÷ base). Antes da v1.34.1, num .sda/.tsr com VT e
+   VU, a coluna de VU chegava ao motor como variável fora do modelo; agora chega do mesmo jeito, pela outra dependente.
+   Fica de fora a coluna calculada pelo revisor (não está no arquivo). */
+const raEntrada1341 = raEntrada;
+raEntrada = function () {
+  const Mx = raEntrada1341(); if (!Mx || Mx.atual) return Mx;
+  const calc = S.calcDep && S.calcDep.col;
+  [S.depAlt, S.dep && S.dep.col].forEach(n => {
+    if (!n || n === Mx.dep.nome || n === calc || Mx.cols.some(c => c.nome === n) || !S.dados.cols.includes(n)) return;
+    if (!S.dados.linhas.filter(l => !l.novo).every(l => Number.isFinite((l.v0 || l.v)[n]))) return;
+    Mx.cols = [...Mx.cols, { nome: n, tipo: "QUANTITATIVA", inc: false, tr: "X", sinal: 0 }];
+  });
+  return Mx;
+};
 </script>
 </body>
 </html>
