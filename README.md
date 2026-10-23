@@ -8,6 +8,6 @@ Ferramenta de análise de modelos de regressão (inferência estatística) para 
 - Revisão automática: parte do modelo atual ou do arquivo como chegou, refaz o modelo, audita os dados, investiga as exclusões do autor, busca e compara modelos alternativos e mede quanto o valor depende da escolha do modelo. Abre com uma conclusão (veredito e até 5 pedidos ao avaliador, com as evidências), gera o texto complementar para o avaliador e o relatório (.txt) para o agente de revisão do Copilot. Cada opção encontrada pode ser montada no modelo atual com um clique.
 - Renda IBGE pelas coordenadas: cria uma variável Proxy com a renda média do responsável pelo domicílio (IBGE, Censo 2022) no ponto de cada dado e do avaliando, pelo método K8 v1 do Renda BR (mesmo valor ao centavo), sem internet: a base dos setores vai embutida no arquivo.
 
-Versão atual: **1.37.0** (19/10/2026).
+Versão atual: **1.37.1** (23/10/2026).
 
 Ferramenta de apoio à análise. Não substitui o laudo nem a responsabilidade técnica do avaliador.
