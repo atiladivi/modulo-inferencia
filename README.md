@@ -6,8 +6,9 @@ Ferramenta de análise de modelos de regressão (inferência estatística) para 
 - Lê laudos em PDF (formulário Laudo de Avaliação), modelos do SisDEA (.sda, relatórios .xls e PDF) e do TS-Sisreg (.tsr, relatório .rtf), planilhas (.xlsx, .xls, .csv) e projetos `.inferencia`.
 - Grava em .sda, .tsr, Excel e projeto, e exporta o relatório no formato do SisDEA (.xlsx).
 - Revisão automática: parte do modelo atual ou do arquivo como chegou, refaz o modelo, audita os dados, investiga as exclusões do autor, busca e compara modelos alternativos e mede quanto o valor depende da escolha do modelo. Abre com uma conclusão (veredito e até 5 pedidos ao avaliador, com as evidências), gera o texto complementar para o avaliador e o relatório (.txt) para o agente de revisão do Copilot. Cada opção encontrada pode ser montada no modelo atual com um clique.
+- Colinearidade e avaliando: mostra se o avaliando segue a estrutura da amostra (alavancagem e componentes das variáveis); dentro dela, a correlação entre variáveis vira informação. Para pares colineares, a razão entre as duas é testada na Busca, na Contraprova e na Revisão automática.
 - Renda IBGE pelas coordenadas: cria uma variável Proxy com a renda média do responsável pelo domicílio (IBGE, Censo 2022) no ponto de cada dado e do avaliando, pelo método K8 v1 do Renda BR (mesmo valor ao centavo), sem internet: a base dos setores vai embutida no arquivo.
 
-Versão atual: **1.37.1** (23/10/2026).
+Versão atual: **1.40.0** (25/10/2026). Visual novo desde a 1.38.0.
 
 Ferramenta de apoio à análise. Não substitui o laudo nem a responsabilidade técnica do avaliador.
