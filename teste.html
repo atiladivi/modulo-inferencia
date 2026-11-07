@@ -1080,7 +1080,9 @@ html .rs .s.rs-imp{max-width:200px}
    ===================================================================== */
 const NOME_JSON_LAUDO = "dados-laudo.json";
 const SCHEMA_LAUDO = "laudo-avaliacao-entrega";
-const VERSOES_SCHEMA_CONHECIDAS = ["1.9.0", "1.10.0", "1.11.0", "1.12.0", "1.13.0", "1.14.0", "1.15.0", "1.16.0"];   // v1.12.0: lê até o formato da v50 (1.16.0)
+const VERSOES_SCHEMA_CONHECIDAS = ["1.9.0", "1.10.0", "1.11.0", "1.12.0", "1.13.0", "1.14.0", "1.15.0", "1.16.0",
+  "1.17.0", "1.18.0", "1.19.0", "1.20.0", "1.21.0", "1.22.0", "1.23.0", "1.24.0", "1.25.0", "1.26.0", "1.27.0", "1.28.0", "1.29.0", "1.30.0",
+  "1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0"];   // v1.12.0: lê até o formato da v50 (1.16.0); v1.63.0: até o da v97 (1.35.0, desconto de oferta)
 const FORMULARIO = {
   vigente: "50.0.0",
   minima: "28.0.0",
@@ -2460,7 +2462,8 @@ const EXEMPLO = {"entrega": {"avaliacao_id": "3b9e6f2a-8c41-4d7e-a5b2-91c0d4e7f5
 /* v1.61.0 (29/10/2026): configuração da Busca numa tela só, sem abas: duas colunas (O que buscar + Ordem | Nível 2 NBR + Nível 3 verificações), transformações em etiquetas com "+ outras", grau e modo em seletores, verificações com Desligada | Marcar | Eliminar; explicações no ⓘ. */
 /* v1.61.1 (29/10/2026): aviso "Antes de buscar" em uma linha; "Zerar o modelo" na configuração da Busca. */
 /* v1.62.0 (29/10/2026): configuração da Busca em três colunas, uma por nível (1 Todas · 2 Atendem à NBR · 3 Passam nos testes). */
-const INF_VERSAO = "1.62.0";
+/* v1.63.0 (07/11/2026): desconto de oferta do laudo (dados 1.35.0, formulário v97) aplicado ao VU e ao valor total das ofertas. */
+const INF_VERSAO = "1.63.0";
 Object.assign(TX, {
   X3: { r: "x³", f: v => v * v * v, ok: v => true, cresc: 1 },
   INV_X3: { r: "1/x³", f: v => 1 / (v * v * v), ok: v => v !== 0, cresc: -1 },
@@ -2670,6 +2673,36 @@ function tratarPdf(r, outros) {
   }
   return ui.aviso("PDF sem dados para a inferência", `<p><b>${esc(r.arquivo)}</b>: ${esc((r.erros || [])[0] || "este PDF não contém os dados estruturados do laudo nem é um relatório do SisDEA.")}</p><p class="small">Da entrega do laudo, só o <b>Volume 1</b> traz as amostras e o modelo. Volumes 2 em diante, o arquivo do LIC, pareceres e termos não servem para a inferência.</p>${FORMATOS_ACEITOS}`);
 }
+/* v1.63.0 — desconto de oferta do laudo (formulário v97, dados 1.35.0).
+   metodologia.mcddm.desconto_oferta_pct (ausente = sem desconto) vale para as amostras de natureza OFERTA;
+   amostras[].valor_unitario_modelo é o VU que entrou no modelo (só vem com desconto); valor_unitario continua o anunciado. */
+const r2Of = x => Math.round(x * 100) / 100;
+function descontoOfertaLaudo(j) {
+  const m = ((j || {}).metodologia || {}).mcddm || {}, d = Number(m.desconto_oferta_pct), pct = d > 0 && d < 100 ? d : 0;
+  const am = (j || {}).amostras || [];
+  const n = am.filter(a => (pct && a.natureza === "OFERTA") || (Number.isFinite(a.valor_unitario_modelo) && Number.isFinite(a.valor_unitario) && Math.abs(a.valor_unitario_modelo - a.valor_unitario) > 0.005)).length;
+  const desc = a => (pct && a.natureza === "OFERTA") || (Number.isFinite(a.valor_unitario_modelo) && Number.isFinite(a.valor_unitario) && Math.abs(a.valor_unitario_modelo - a.valor_unitario) > 0.005);
+  return { pct, n, nm: am.filter(a => desc(a) && a.utilizada_no_modelo !== false).length };
+}
+function vuAnunciadoLaudo(a) { return Number.isFinite(a.valor_unitario) ? a.valor_unitario : a.valor_total / a.area_m2; }
+function fatorOfertaLaudo(a, DO) { return DO && DO.pct && a.natureza === "OFERTA" ? 1 - DO.pct / 100 : 1; }
+function vuModeloLaudo(a, DO) {
+  if (Number.isFinite(a.valor_unitario_modelo)) return a.valor_unitario_modelo;
+  const vu = vuAnunciadoLaudo(a), f = fatorOfertaLaudo(a, DO);
+  return f < 1 && Number.isFinite(vu) ? r2Of(vu * f) : vu;
+}
+function vtModeloLaudo(a, DO) {
+  const vt = a.valor_total; if (!Number.isFinite(vt)) return vt;
+  const f = fatorOfertaLaudo(a, DO);
+  if (f < 1) return r2Of(vt * f);
+  const vu = vuAnunciadoLaudo(a), vm = a.valor_unitario_modelo;   // VU do modelo sem o percentual informado: mesma razão
+  return Number.isFinite(vm) && Number.isFinite(vu) && vu > 0 && Math.abs(vm - vu) > 0.005 ? r2Of(vt * vm / vu) : vt;
+}
+function infoOfertaLaudo(a, info, DO) {
+  const vm = vuModeloLaudo(a, DO), vu = vuAnunciadoLaudo(a);
+  if (!Number.isFinite(vm) || !Number.isFinite(vu) || Math.abs(vm - vu) <= 0.005) return info;
+  return { ...info, "VU anunciado": vu, "Valor total anunciado": a.valor_total };
+}
 function carregarDeLaudo(j, nome, verif, exemplo, opc) {
   opc = opc || {};
   const m = (j.metodologia || {}).mcddm;
@@ -2679,7 +2712,10 @@ function carregarDeLaudo(j, nome, verif, exemplo, opc) {
   if (TY_NAO_TRATADA[trDepLaudo]) return avisoTrNaoTratada(trDepLaudo);
   const vars = m.variaveis || [], nm = v => `${v.codigo} ${v.nome}`;
   const dep = m.modelo && m.modelo.variavel_dependente === "VT" ? "Valor total" : "VU";
-  S.dados = { cols: [dep, "Área", dep === "VU" ? "Valor total" : "VU", ...vars.map(nm)], linhas: j.amostras.map(a => ({ id: a.codigo, ativo: a.utilizada_no_modelo !== false, txt: { end: a.endereco }, info: infoDeAmostra(a), v: { VU: Number.isFinite(a.valor_unitario) ? a.valor_unitario : a.valor_total / a.area_m2, "Valor total": a.valor_total, "Área": a.area_m2, ...Object.fromEntries(vars.map(v => { const x = (a.variaveis || {})[v.codigo]; return [nm(v), Number.isFinite(x) ? x : v.fixa === "AREA" ? a.area_m2 : x]; })) } })),
+  /* v1.63.0: desconto de oferta (dados 1.35.0): o modelo usa o VU com o desconto nas ofertas (valor_unitario_modelo) e o valor total
+     com o mesmo desconto (como o formulário, cmYDe); o anunciado fica como informativa. */
+  const DO = descontoOfertaLaudo(j);
+  S.dados = { cols: [dep, "Área", dep === "VU" ? "Valor total" : "VU", ...vars.map(nm)], linhas: j.amostras.map(a => ({ id: a.codigo, ativo: a.utilizada_no_modelo !== false, txt: { end: a.endereco }, info: infoOfertaLaudo(a, infoDeAmostra(a), DO), v: { VU: vuModeloLaudo(a, DO), "Valor total": vtModeloLaudo(a, DO), "Área": a.area_m2, ...Object.fromEntries(vars.map(v => { const x = (a.variaveis || {})[v.codigo]; return [nm(v), Number.isFinite(x) ? x : v.fixa === "AREA" ? a.area_m2 : x]; })) } })),
     aval: Object.fromEntries(vars.map(v => [nm(v), v.valor_avaliando])), avalInfo: infoAvaliandoLaudo(j) };
   S.dep = { col: dep, tr: TY[trDepLaudo] ? trDepLaudo : "Y" };
   /* v1.12.0: "Dummies / códigos" (formulário até a v48) deixou de ser transformação: x, reconhecida pelo tipo da variável */
@@ -2696,6 +2732,7 @@ function carregarDeLaudo(j, nome, verif, exemplo, opc) {
   S.ref = { rotulo: `Declarado no laudo ${j.entrega.numero_laudo} ${j.entrega.revisao}`, curto: ["o", "laudo"], R2: mod.r2, R2aj: mod.r2_ajustado, n: mod.dados_utilizados, central: inf.vu_central, inf: inf.limite_inferior, sup: inf.limite_superior, grauF: m.grau_fundamentacao, grauP: m.grau_precisao, eq: mod.equacao, crit: "auto", adot: inf.vu_adotado, config: { dep: { ...S.dep }, vars: S.vars.map(v => ({ ...v })) }, ativos: null };
   const marcados = j.amostras.some(a => a.utilizada_no_modelo !== undefined), fora = j.amostras.filter(a => a.utilizada_no_modelo === false).length;
   S.avisos = [];
+  if (DO.n) S.avisos.push(`Desconto de oferta de ${fmtNumAuto(DO.pct)}% aplicado a ${DO.n} oferta(s)${DO.nm < DO.n ? ` (${DO.nm} no modelo)` : ""}: VU e valor total do modelo como no laudo; o anunciado fica nas informações do dado.`);
   if (marcados) { if (fora) S.avisos.push(`${fora} amostra(s) estão marcadas no laudo como fora do modelo e começam desabilitadas.`); }
   else if (mod.dados_utilizados && mod.total_dados && mod.dados_utilizados < mod.total_dados) S.avisos.push(`O laudo declara ${mod.dados_utilizados} de ${mod.total_dados} dados utilizados, mas não informa quais foram excluídos. Desabilite na aba Dados os dados que o avaliador retirou para reproduzir o modelo.`);
   if (verif && !verif.integro) S.avisos.unshift("Atenção: os dados embutidos neste PDF não conferem com o documento impresso.");
@@ -3779,6 +3816,21 @@ function desenharEtapas() {
   $("#etapas").innerHTML = et.map((x, i) => `${i ? '<span class="et-seta" aria-hidden="true">›</span>' : ""}<button class="et et-${x.st}" ${x.acao ? `data-acao="${x.acao}"` : "disabled"} ${x.st === "on" ? 'aria-current="step"' : ""}><span class="et-n">${x.st === "ok" ? "✓" : x.st === "w" ? "!" : x.n}</span><span class="et-t"><b>${x.nome}</b><span>${esc(x.sub)}</span></span></button>`).join("");
 }
 
+/* v1.63.0: com o mesmo R², diferença da estimativa (e dos limites) que bate com um desconto único (1% a 30%, inteiro ou meio),
+   sem desconto já aplicado na leitura. */
+function descontoProvavel(R) {
+  if ((S.avisos || []).some(x => /^Desconto de oferta de /.test(x))) return null;
+  const e = S.est && !S.est.erro ? S.est : null; if (!R || !e || !Number.isFinite(R.central)) return null;
+  const pctDe = (a, b) => Number.isFinite(a) && Number.isFinite(b) && b > 0 ? { q: a / b, pct: Math.round((1 - a / b) * 200) / 2 } : null;
+  const bate = (x, pct) => x && Math.abs((1 - pct / 100) / x.q - 1) <= 0.003;
+  // os limites do IC, quando o arquivo traz, têm de bater com o mesmo desconto (não dependem do critério)
+  const lims = [pctDe(R.inf, e.inf), pctDe(R.sup, e.sup)].filter(Boolean);
+  for (const c of ["moda", "mediana", "media"]) {
+    const x = pctDe(R.central, e.vals && e.vals[c]); if (!x || !(x.pct >= 1 && x.pct <= 30)) continue;
+    if (bate(x, x.pct) && lims.every(l => bate(l, x.pct))) return { pct: x.pct };
+  }
+  return null;
+}
 /* ------------------------------ Etapa 2: conferir a reprodução ------------------------------ */
 function desenharConferir() {
   const R = S.refArquivo, c = compararCom(R), r = S.r, m = modeloAtual(), X = S.externo;
@@ -3802,6 +3854,7 @@ function desenharConferir() {
         if (mesmasTr) causas.push("Os resultados gravados no arquivo podem estar desatualizados (os dados mudaram depois do último cálculo no programa). Vale o cálculo feito aqui.");
         causas.push("Mesma quantidade de dados, mas R² diferente: os dados retirados podem não ser os mesmos, ou alguma transformação difere da equação do arquivo.");
       }
+      { const dd = it("R²") && it("R²").st === "ok" ? descontoProvavel(R) : null; if (dd) causas.push(`O valor do arquivo fica ${fmtNumAuto(dd.pct)}% abaixo do calculado aqui: provável desconto de oferta de ${fmtNumAuto(dd.pct)}% nos dados do modelo que não veio nos dados lidos. Confira no laudo se houve desconto e em quais amostras.`); }
       if (it("R²") && it("R²").st === "ok" && it("Estimativa (") && it("Estimativa (").st === "dif") causas.push("O ajuste é o mesmo, mas a estimativa difere: confira os valores do avaliando e o critério de estimativa do programa de origem (moda, mediana ou média).");
       if (it("Coeficientes") && it("Coeficientes").st === "dif" && it("R²") && it("R²").st === "ok") causas.push("Coeficientes diferentes com o mesmo R²: confira as transformações das variáveis indicadas.");
     }
@@ -7985,7 +8038,7 @@ function limparInfo(o) {
   });
   return out;
 }
-const IGN_AMOSTRA = new Set(["codigo", "variaveis", "valor_unitario", "valor_total", "area_m2", "utilizada_no_modelo", "fotos", "foto", "imagens", "imagem", "anexos", "foto_sha256"]);   // v1.37.1: foto_sha256 não é informativa
+const IGN_AMOSTRA = new Set(["codigo", "variaveis", "valor_unitario", "valor_total", "area_m2", "utilizada_no_modelo", "valor_unitario_modelo", "fotos", "foto", "imagens", "imagem", "anexos", "foto_sha256"]);   // v1.37.1: foto_sha256 não é informativa
 function infoDeAmostra(a) {
   const o = {}, put = (k, v) => { if (v === null || v === undefined || typeof v === "object") return; const r = rotuloInfo(k); if (!(r in o)) o[r] = v; };
   Object.entries(a || {}).forEach(([k, v]) => { if (IGN_AMOSTRA.has(k)) return; if (v && typeof v === "object" && !Array.isArray(v)) Object.entries(v).forEach(([k2, v2]) => put(k2, v2)); else if (!Array.isArray(v)) put(k, v); });
@@ -19005,6 +19058,7 @@ function quadroOrigem1450() {
       ${o.projeto ? `<span>Projeto</span><span>${esc(o.projeto)}</span>` : ""}
       <span>Dados e avaliando</span><span>${esc(dados)}</span>
       <span>Variáveis, transformações e equação</span><span>${esc(modelo)}</span>
+      ${(() => { const t = (S.avisos || []).find(x => /^Desconto de oferta de /.test(x)); return t ? `<span>Desconto de oferta</span><span>${esc(t.replace(/^Desconto de oferta de /, "").replace(/: VU e valor total.*$/, ""))} · VU e valor total do modelo como no laudo</span>` : ""; })()}
       <span>Conferência</span><span class="op-c ${cc}">${esc(conf)}${S.refArquivo ? ` <button class="btn-link" data-acao="ver-repro">ver</button>` : ""}</span>
     </div>
     ${A ? `<div class="op-a"><button class="btn btn-sm" data-acao="arq-modelo">${A.soArquivo ? "Voltar ao laudo" : `Baixar o ${esc(A.ext ? "." + A.ext : "arquivo")} anexado`}</button><span>${A.soArquivo ? "" : "o arquivo como veio, sem nenhuma mudança"}</span></div>` : ""}`;
